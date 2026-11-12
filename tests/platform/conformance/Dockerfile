@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # Build context: repository root (go.work). Multi-stage, static binary, distroless non-root.
-FROM golang:1.27.2-bookworm AS build
+FROM golang:1.27.4-bookworm AS build
 WORKDIR /src
 ENV CGO_ENABLED=0 GOFLAGS=-trimpath
 COPY go.work go.work.sum ./
