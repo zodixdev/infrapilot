@@ -76,7 +76,7 @@ test: ## Unit tests with the race detector
 	@for m in $(GO_MODULES); do echo "go test: $$m"; (cd $(ROOT)/$$m && $(GO) test -race -count=1 -timeout 10m ./...); done
 
 test-integration: ## Integration tests against real dependencies (testcontainers; needs Docker)
-	@for m in $(GO_MODULES); do echo "go test (integration): $$m"; (cd $(ROOT)/$$m && $(GO) test -race -count=1 -p 1 -timeout 20m -tags integration -run 'Integration|^TestF[0-9]' ./...); done
+	@for m in $(GO_MODULES); do echo "go test (integration): $$m"; (cd $(ROOT)/$$m && $(GO) test -race -count=1 -p 1 -timeout 20m -tags integration ./...); done
 
 verify: lint test test-integration ## Everything CI runs; must stay green
 
