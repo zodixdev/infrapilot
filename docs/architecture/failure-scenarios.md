@@ -8,7 +8,7 @@ Each scenario gets an automated test (integration, e2e or chaos) in the mileston
 | F02 | Keycloak unavailable | Existing JWTs still validate (cached JWKS); new logins fail gracefully | integration | M02 |
 | F03 | Redis unavailable | Rate limiting fails **open** with a metric + alert; permission cache falls back to gRPC | integration | M02 |
 | F04 | Kafka unavailable | Producers buffer to a bounded limit, then ingestion returns 503/`RESOURCE_EXHAUSTED`; never ack data not stored | integration | M03 |
-| F05 | check-runner pod killed mid-run | Leases expire; another worker runs the check; no double incident | chaos | M03 |
+| F05 | check-runner pod killed or stalled mid-run | Lease expires; another worker runs the check (at-least-once); stale worker is fenced by `lease_epoch`; one effective result per `run_key`; no double incident | chaos + integration | M03 |
 | F06 | Consumer crash after write, before commit | Redelivery is deduped; single row/incident | integration | M03/M04 |
 | F07 | TimescaleDB slow | stream-processor applies backpressure (pauses partitions), lag alert fires, no OOM | load | M03 |
 | F08 | RabbitMQ unavailable | Outbox rows accumulate; delivered after recovery; outbox-age alert | integration | M04 |

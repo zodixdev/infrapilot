@@ -15,14 +15,14 @@ Status values: `not started` · `in progress` · `done`. Update this file when a
 - Repo skeleton per ADR-0001/0016: `go.work`, `pkg/` module, `gen/`, `contracts/`, `deploy/`, `observability/`, `tests/`.
 - `Makefile`: `bootstrap`, `gen`, `lint`, `test`, `test-integration`, `up`/`down` (compose profiles), `cluster`, `deploy`, `verify`.
 - Tooling pinned: golangci-lint config, buf (lint + breaking), sqlc, goose, oapi-codegen, pre-commit (gofmt, gitleaks).
-- `pkg/`: config, slog logger + redaction, OTel bootstrap, HTTP & gRPC servers with graceful shutdown,
-  health/readiness registry, pgx pool + `WithTx` (+ `SET LOCAL app.org_id`), outbox table + dispatcher,
-  Kafka producer/consumer framework (retries, DLQ, lag metrics), AMQP publisher (confirms) / consumer (tiers, DLQ),
-  SSRF-safe dialer. All with unit + testcontainers integration tests.
-- `contracts/proto/infrapilot/events/v1/envelope.proto` + buf config; `contracts/openapi/public.yaml` skeleton
+- `pkg/` (only what M02 needs immediately): config, slog logger + redaction, OTel bootstrap, HTTP & gRPC servers
+  with graceful shutdown, health/readiness registry, pgx pool + `WithTx` (+ `SET LOCAL app.org_id`).
+  Unit + testcontainers integration tests. **Messaging frameworks, outbox and SSRF dialer are NOT built here** —
+  each is built in the milestone of its first real consumer (M03/M04), shaped by that use.
+- buf config + `contracts/proto/infrapilot/events/v1/envelope.proto`; `contracts/openapi/public.yaml` skeleton
   (info, security schemes, error model, pagination conventions).
-- docker compose with profiles: `core` (postgres, redis, keycloak), `stream` (kafka KRaft, timescaledb),
-  `tasks` (rabbitmq), `analytics` (clickhouse, minio), `obs` (otel-collector, prometheus, tempo, loki, grafana).
+- docker compose profiles `core` (postgres, redis, keycloak) and `obs` (otel-collector, prometheus, tempo, loki, grafana).
+  Later profiles are added by the milestone that first needs them.
 - kind cluster config + Helm library chart `infrapilot-lib` (Deployment, Service, PDB, HPA, probes,
   resources, NetworkPolicy, ServiceMonitor, migration Job hook) + kubeconform tests.
 - Observability as code: collector config, Prometheus rules, Grafana provisioning, base "Go service" dashboard.
@@ -30,8 +30,8 @@ Status values: `not started` · `in progress` · `done`. Update this file when a
 
 **Acceptance**
 - `make bootstrap && make verify` passes on a clean machine (lint, unit, race, integration).
-- `make up PROFILE=all` brings all dependencies healthy; `make cluster deploy` installs a chart built from the library chart and passes `helm test`.
-- `pkg/` integration tests prove: outbox survives broker outage (F08 pattern), consumer dedup on redelivery (F06 pattern), graceful shutdown drains in-flight work, SSRF dialer blocks the forbidden ranges incl. DNS-rebinding test.
+- `make up PROFILE=core,obs` brings those dependencies healthy; `make cluster deploy` installs a test chart built from the library chart and passes `helm test`; its traces/metrics appear in Tempo/Prometheus.
+- `pkg/` integration tests prove: graceful shutdown drains in-flight HTTP/gRPC work within the deadline; `WithTx` rolls back on error/panic and sets `app.org_id`; readiness flips to false on dependency loss.
 
 ## M02 — Identity, control plane, gateway · status: not started
 
@@ -45,17 +45,22 @@ dashboards + alerts + runbooks for both services.
 
 ## M03 — Checks & telemetry pipeline · status: not started
 
-**Scope:** check-runner (HTTP/TCP/TLS-expiry/DNS/ICMP checks, lease scheduler ADR-0013, worker pool,
+**Scope:** compose profile `stream` (Kafka KRaft, TimescaleDB); `pkg/` additions driven by this milestone:
+outbox table + dispatcher, Kafka producer/consumer framework (retries, DLQ, lag metrics, pause/resume),
+SSRF-safe dialer; control-plane starts publishing `resource.state.v1` through the outbox;
+check-runner (HTTP/TCP/TLS-expiry/DNS/ICMP checks, lease scheduler with fencing per ADR-0013, worker pool,
 SSRF guard, per-tenant limits); Kafka topics as code; stream-processor (batched writes to TimescaleDB,
 hypertables, continuous aggregates, retention/compression, threshold rules → `signals.v1`); query-service
 (metrics/check-results read API, tenant-scoped, bounded); public API for checks and results.
 
-**Acceptance:** F04, F05, F06, F07 tests; scheduling drift p95 < 5 s with 10k checks / 3 replicas on kind;
+**Acceptance:** F04, F05, F06, F07, F08-pattern (outbox survives Kafka outage) tests; stale-lease test (paused worker
+cannot advance schedule or produce a second effective result); SSRF tests incl. DNS rebinding and redirects; scheduling drift p95 < 5 s with 10k checks / 3 replicas on kind;
 pprof + trace captured under load with findings in the report; consumer lag dashboard + alerts.
 
 ## M04 — Incidents & notifications · status: not started
 
-**Scope:** incident-engine (alert rules, correlation/fingerprinting, dedup, state machine
+**Scope:** compose profile `tasks` (RabbitMQ); `pkg/` AMQP publisher (confirms) / consumer (retry tiers, DLQ) built
+for these consumers; incident-engine (alert rules, correlation/fingerprinting, dedup, state machine
 `triggered → acknowledged → resolved` (+ `reopened`), timeline, outbox → RabbitMQ + `incident.lifecycle.v1`);
 notification-service (email/Slack/Telegram/webhook with HMAC, routing rules, delivery attempts, tiered retries, DLQ).
 
@@ -74,7 +79,7 @@ CPU/memory/goroutine numbers recorded; no goroutine leak after 1,000 connect/dis
 
 ## M06 — Logs & traces · status: not started
 
-**Scope:** telemetry-ingestion (OTLP gRPC/HTTP, API key + mTLS auth, quotas, backpressure); ClickHouse schemas
+**Scope:** compose profile `analytics` (ClickHouse, MinIO); telemetry-ingestion (OTLP gRPC/HTTP, API key + mTLS auth, quotas, backpressure); ClickHouse schemas
 with TTL; stream-processor logs/spans writers; query-service log search + trace lookup; S3 archive for raw batches.
 
 **Acceptance:** F04, F13 tests; sustained 20k events/s on kind with p95 queryable < 10 s; ADR-0007 benchmark

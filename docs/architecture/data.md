@@ -67,6 +67,8 @@ Attempt count is carried in a header; exceeding the max routes to DLQ and raises
 - **Idempotent consumers:** every message carries `event_id`/`message_id`. Consumers record processed IDs in a
   `processed_messages` table in the same transaction as the side effect (unique constraint), or use natural
   unique keys (e.g. one incident per `(org_id, rule_id, fingerprint, open)`).
+- **Be precise about guarantees:** we provide at-least-once *execution* and at-most-once *effect* (via dedup keys and
+  fencing tokens). Docs, reports and code comments must never claim exactly-once execution.
 - **External side effects** (sending a notification, running a command) use idempotency keys and attempt records;
   we guarantee at-least-once delivery with dedup at the receiver where possible; webhooks include
   `X-InfraPilot-Delivery-Id` so receivers can dedupe.
