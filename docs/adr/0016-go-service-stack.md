@@ -32,6 +32,7 @@ services/<name>/
   Dockerfile
 ```
 
-`pkg/` (shared module) provides: config loading, logger, OTel setup, HTTP/gRPC server with graceful
-shutdown, health/readiness registry, pgx pool + `WithTx`, outbox dispatcher, Kafka/AMQP consumer
-frameworks with retries/DLQ, SSRF-safe dialer. **No domain logic in `pkg/`.**
+`pkg/` (shared module) grows **only when a real consumer needs it** (no speculative abstractions):
+M01 — config, logger, OTel setup, HTTP/gRPC servers with graceful shutdown, health/readiness, pgx pool + `WithTx`;
+M03 — outbox dispatcher, Kafka framework, SSRF-safe dialer; M04 — AMQP framework. A helper moves into `pkg/`
+when a second service needs it; until then it stays inside the service. **No domain logic in `pkg/`.**
