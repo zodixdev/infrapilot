@@ -1,0 +1,165 @@
+{{- /* Test-only Postgres with the ADR-0018 role split; password is generated once and reused on upgrades. */ -}}
+{{- $secretName := "conformance-postgres" -}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $secretName -}}
+{{- $password := "" -}}
+{{- if $existing -}}
+{{- $password = index $existing.data "password" | b64dec -}}
+{{- else -}}
+{{- $password = randAlphaNum 24 -}}
+{{- end -}}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secretName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: conformance-postgres
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/part-of: infrapilot
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-20"
+    helm.sh/resource-policy: keep
+type: Opaque
+stringData:
+  password: {{ $password | quote }}
+  migrator-url: {{ printf "postgres://conformance_migrator:%s@conformance-postgres:5432/conformance?sslmode=disable" $password | quote }}
+  app-url: {{ printf "postgres://conformance_app:%s@conformance-postgres:5432/conformance?sslmode=disable" $password | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: conformance-postgres-init
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: conformance-postgres
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-20"
+    helm.sh/resource-policy: keep
+data:
+  01-roles.sh: |
+    #!/bin/sh
+    set -eu
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<SQL
+    CREATE ROLE conformance_migrator LOGIN PASSWORD '$ROLE_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+    CREATE ROLE conformance_app      LOGIN PASSWORD '$ROLE_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+    CREATE DATABASE conformance OWNER conformance_migrator;
+    SQL
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname conformance <<SQL
+    REVOKE ALL ON SCHEMA public FROM PUBLIC;
+    GRANT ALL ON SCHEMA public TO conformance_migrator;
+    GRANT USAGE ON SCHEMA public TO conformance_app;
+    SQL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: conformance-postgres
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: conformance-postgres
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-15"
+    helm.sh/resource-policy: keep
+spec:
+  selector:
+    app.kubernetes.io/name: conformance-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: conformance-postgres
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: conformance-postgres
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    # Installed as a hook so it is ready before the migration job (weight -10 < -5) runs.
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/resource-policy: keep
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: conformance-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: conformance-postgres
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: password
+            - name: ROLE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+              name: postgres
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            periodSeconds: 2
+            failureThreshold: 30
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: init
+          configMap:
+            name: conformance-postgres-init
+            defaultMode: 0555

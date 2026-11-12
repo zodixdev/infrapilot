@@ -1,0 +1,1 @@
+{{ include "infrapilot-lib.all" . }}

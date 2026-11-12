@@ -1,0 +1,10 @@
+apiVersion: v2
+name: conformance
+description: Reference workload that exercises infrapilot-lib end to end (used by make deploy, helm test and the kind e2e).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  - name: infrapilot-lib
+    version: 0.1.0
+    repository: file://../../../deploy/helm/infrapilot-lib

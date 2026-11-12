@@ -33,8 +33,17 @@ type Check func(ctx context.Context) error
 type Result struct {
 	Status    Status        `json:"status"`
 	Error     string        `json:"error,omitempty"`
-	Duration  time.Duration `json:"duration_ms"`
+	Duration  time.Duration `json:"-"`
 	CheckedAt time.Time     `json:"checked_at"`
+}
+
+// MarshalJSON renders the duration in milliseconds (a time.Duration would serialize as nanoseconds).
+func (r Result) MarshalJSON() ([]byte, error) {
+	type plain Result
+	return json.Marshal(struct {
+		plain
+		DurationMS float64 `json:"duration_ms"`
+	}{plain(r), float64(r.Duration) / float64(time.Millisecond)})
 }
 
 // Report is the readiness document.

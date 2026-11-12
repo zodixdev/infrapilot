@@ -1,0 +1,166 @@
+# InfraPilot CI — mirrors `make verify` plus image/cluster checks. Every job is a thin wrapper around a
+# Make target so local runs (`make verify`, `act -j lint`) and CI stay identical.
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["milestone/*"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GOTOOLCHAIN: local
+  GOFLAGS: -buildvcs=false
+
+jobs:
+  lint:
+    name: lint (go, proto, helm, observability, docker)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # buf breaking compares against origin/main
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
+          cache-dependency-path: |
+            pkg/go.sum
+            tests/go.sum
+            tools/go.sum
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: tests/platform/conformance/Dockerfile
+      - name: Install yq
+        run: sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_linux_amd64 && sudo chmod +x /usr/local/bin/yq
+      - run: make fmt-check lint-go lint-proto lint-helm lint-obs
+      - name: Generated code is up to date
+        run: make gen && git diff --exit-code -- gen/
+
+  test:
+    name: unit tests (race)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
+          cache-dependency-path: |
+            pkg/go.sum
+            tests/go.sum
+            tools/go.sum
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+      - run: make test
+
+  integration:
+    name: integration tests (testcontainers)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
+          cache-dependency-path: |
+            pkg/go.sum
+            tests/go.sum
+            tools/go.sum
+      - run: make test-integration
+
+  security:
+    name: govulncheck + gitleaks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
+          cache-dependency-path: |
+            pkg/go.sum
+            tests/go.sum
+            tools/go.sum
+      - run: make vuln
+      - name: gitleaks (full history)
+        run: go tool gitleaks git --redact --no-banner --config .gitleaks.toml .
+
+  image:
+    name: build image + trivy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - name: Build conformance image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: tests/platform/conformance/Dockerfile
+          tags: infrapilot/conformance:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: infrapilot/conformance:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+      - name: Save image
+        run: docker save infrapilot/conformance:ci -o /tmp/conformance.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: conformance-image
+          path: /tmp/conformance.tar
+          retention-days: 1
+
+  kind-e2e:
+    name: kind deploy + helm test + e2e
+    runs-on: ubuntu-24.04
+    needs: [image]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
+          cache-dependency-path: |
+            pkg/go.sum
+            tests/go.sum
+            tools/go.sum
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: conformance-image
+          path: /tmp
+      - run: docker load -i /tmp/conformance.tar && docker tag infrapilot/conformance:ci infrapilot/conformance:dev
+      - name: Observability stack (compose obs profile)
+        run: make secrets && make up PROFILE=obs
+      - name: kind cluster
+        run: make cluster
+      - name: Deploy conformance chart and run helm test
+        # kind nodes reach the host compose stack through the docker bridge gateway on Linux runners.
+        run: make deploy CONFORMANCE_IMAGE=infrapilot/conformance:dev OTLP_ENDPOINT=172.17.0.1:4317
+      - name: e2e (traces in Tempo, metrics in Prometheus)
+        run: make e2e
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl --context kind-infrapilot -n infrapilot-test get all
+          kubectl --context kind-infrapilot -n infrapilot-test describe pods
+          kubectl --context kind-infrapilot -n infrapilot-test logs -l app.kubernetes.io/name=conformance --tail=200
+          docker compose --project-name infrapilot --env-file .env -f deploy/compose/docker-compose.yml --profile '*' logs --tail=100

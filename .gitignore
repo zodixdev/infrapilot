@@ -33,3 +33,6 @@ node_modules/
 .idea/
 .vscode/
 .DS_Store
+
+# Helm packaged dependencies (rebuilt by helm dependency update)
+**/charts/*.tgz
