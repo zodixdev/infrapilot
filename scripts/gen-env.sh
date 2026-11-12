@@ -14,3 +14,6 @@ while IFS= read -r line; do
 done < .env.example > .env
 chmod 600 .env
 echo "gen-env: wrote .env (git-ignored)"
+if [[ "${FORCE:-0}" == "1" ]]; then
+  echo "gen-env: secrets changed — existing compose volumes still hold the old passwords; run: make down VOLUMES=1"
+fi

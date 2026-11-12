@@ -1,0 +1,84 @@
+# Baseline alerts for every InfraPilot Go service (AGENTS.md §9). Metric names come from pkg/.
+# Runbook: docs/runbooks/platform.md
+groups:
+  - name: infrapilot-go-service
+    rules:
+      - alert: ServiceTargetDown
+        expr: up == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Scrape target {{ $labels.job }}/{{ $labels.instance }} is down"
+          runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#servicetargetdown
+
+      - alert: ServiceNotReady
+        expr: max by (job, instance) (health_ready) == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }}/{{ $labels.instance }} has reported not-ready for 5 minutes"
+          runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#servicenotready
+
+      - alert: DependencyCheckFailing
+        expr: min by (job, instance, check) (health_check_up) == 0
+        for: 3m
+        labels: { severity: warning }
+        annotations:
+          summary: "Dependency check {{ $labels.check }} failing on {{ $labels.job }}/{{ $labels.instance }}"
+          runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#dependencycheckfailing
+
+      - alert: HttpHighErrorRate
+        expr: |
+          sum by (job) (rate(http_server_requests_total{status=~"5.."}[5m]))
+            /
+          sum by (job) (rate(http_server_requests_total[5m])) > 0.05
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }}: more than 5% of HTTP responses are 5xx"
+          runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#httphigherrorrate
+
+      - alert: HttpHighLatencyP99
+        expr: |
+          histogram_quantile(0.99, sum by (job, le) (rate(http_server_request_duration_seconds_bucket[5m]))) > 0.3
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.job }}: HTTP p99 latency above the 300 ms SLO"
+          runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#httphighlatencyp99
+
+      - alert: GrpcHighErrorRate
+        expr: |
+          sum by (job) (rate(grpc_server_handled_total{grpc_code=~"Internal|Unknown|Unavailable|DataLoss"}[5m]))
+            /
+          sum by (job) (rate(grpc_server_handled_total[5m])) > 0.05
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }}: more than 5% of gRPC calls fail with server errors"
+          runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#grpchigherrorrate
+
+      - alert: GoroutineGrowth
+        expr: go_goroutines > 5000 and deriv(go_goroutines[30m]) > 0.5
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.job }}/{{ $labels.instance }}: goroutines keep growing (possible leak)"
+          runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#goroutinegrowth
+
+      - alert: PgPoolSaturated
+        expr: |
+          max by (job, instance) (pgxpool_acquired_conns) / max by (job, instance) (pgxpool_max_conns) > 0.9
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.job }}/{{ $labels.instance }}: Postgres pool above 90% utilisation"
+          runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#pgpoolsaturated
+
+      - alert: PgPoolWaiting
+        expr: rate(pgxpool_empty_acquire_total[5m]) > 1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.job }}/{{ $labels.instance }}: requests are waiting for Postgres connections"
+          runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#pgpoolwaiting
