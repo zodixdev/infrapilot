@@ -21,7 +21,9 @@ PROFILE_FLAGS := $(if $(filter all,$(COMPOSE_PROFILES)),--profile '*',$(foreach 
 COMPOSE := docker compose --project-name infrapilot --env-file $(ROOT)/.env -f $(ROOT)/deploy/compose/docker-compose.yml
 KIND_CLUSTER ?= infrapilot
 KUBE_CONTEXT := kind-$(KIND_CLUSTER)
-CONFORMANCE_IMAGE ?= infrapilot/conformance:dev
+# Unique tag per revision so `make deploy` always rolls the pods (a fixed tag + IfNotPresent would not).
+GIT_REV := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)$(shell git diff --quiet 2>/dev/null || echo -dirty)
+CONFORMANCE_IMAGE ?= infrapilot/conformance:$(GIT_REV)
 # OTLP endpoint the conformance pods push to (host compose stack). Linux CI uses the docker bridge gateway.
 OTLP_ENDPOINT ?= host.docker.internal:4317
 HELM_RELEASE ?= conformance
