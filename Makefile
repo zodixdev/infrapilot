@@ -39,7 +39,7 @@ bootstrap: ## Install pinned toolchain (brew packages + Go tools) and git hooks
 
 gen: ## Generate code from contracts (protobuf via buf, OpenAPI via oapi-codegen)
 	@cd $(ROOT)/contracts && $(GOTOOL) buf generate
-	@$(GOTOOL) oapi-codegen -config $(ROOT)/contracts/openapi/oapi-codegen.yaml $(ROOT)/contracts/openapi/public.yaml
+	@cd $(ROOT)/contracts/openapi && $(GOTOOL) oapi-codegen -config oapi-codegen.yaml public.yaml
 	@gofmt -w $(ROOT)/gen/go
 	@cd $(ROOT)/gen && $(GO) mod tidy
 

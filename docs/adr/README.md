@@ -8,7 +8,7 @@ and list it in the milestone report so the owner can review it later.
 |---|---|
 | [0001](0001-monorepo.md) | Monorepo, `go.work`, one Go module per service |
 | [0002](0002-service-boundaries.md) | 12 deployables with DB-per-service ownership |
-| [0003](0003-api-styles.md) | REST/OpenAPI public, gRPC internal, gRPC streams for agents |
+| [0003](0003-api-styles.md) | REST/OpenAPI public, gRPC internal, gRPC streams for agents (OpenAPI version: see 0020) |
 | [0004](0004-kafka-and-rabbitmq.md) | Kafka for events, RabbitMQ for tasks |
 | [0005](0005-outbox-idempotency.md) | Transactional outbox + idempotent consumers |
 | [0006](0006-event-schemas.md) | Protobuf events with buf breaking-change checks |
@@ -23,5 +23,7 @@ and list it in the milestone report so the owner can review it later.
 | [0015](0015-ai-boundary.md) | AI is advisory; deterministic evidence first, LLM summarizes |
 | [0016](0016-go-service-stack.md) | Go libraries and service template |
 | [0017](0017-frontend.md) | Next.js App Router + Auth.js (Keycloak) |
+| [0020](0020-openapi-document-version.md) | Public OpenAPI document stays on 3.0.3 until the generator proves 3.1 support (partially supersedes 0003) |
+| [0021](0021-tool-pinning.md) | Toolchain pinned with Go `tool` directives + Brewfile |
 
 Template: [0000-template.md](0000-template.md)

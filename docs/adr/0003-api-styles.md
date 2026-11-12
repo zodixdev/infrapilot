@@ -3,7 +3,7 @@
 - Status: accepted · Decider: senior-backend · Date: 2026-11-12
 
 ## Decision
-- Public API: REST + OpenAPI 3.1 (`contracts/openapi/public.yaml`), versioned by path `/v1`,
+- Public API: REST + OpenAPI (`contracts/openapi/public.yaml`; document version 3.0.3 per ADR-0020), versioned by path `/v1`,
   cursor pagination, RFC 9457 problem+json errors, `Idempotency-Key` header on POSTs that create resources.
 - Internal: gRPC + Protobuf (`contracts/proto/`), mandatory deadlines, standard status codes, retries only on
   idempotent RPCs with backoff + jitter.

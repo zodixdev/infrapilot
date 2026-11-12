@@ -55,6 +55,8 @@ linters:
       check-blank: true
     govet:
       enable-all: true
+      disable:
+        - fieldalignment # layout-for-size hints hurt readability of config structs
       settings:
         shadow:
           strict: false
