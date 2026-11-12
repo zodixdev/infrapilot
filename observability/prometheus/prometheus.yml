@@ -1,0 +1,37 @@
+# Prometheus for InfraPilot self-observability (local compose). Services either push via the
+# collector (remote write receiver enabled) or are scraped; in Kubernetes a ServiceMonitor scrapes.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: local
+
+rule_files:
+  - /etc/prometheus/rules/*.yaml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8888"]
+  - job_name: grafana
+    static_configs:
+      - targets: ["grafana:3000"]
+  - job_name: tempo
+    static_configs:
+      - targets: ["tempo:3200"]
+  - job_name: loki
+    static_configs:
+      - targets: ["loki:3100"]
+  - job_name: keycloak
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["keycloak:9000"]
+  # Go services running on the host during development (make run) expose /metrics on their admin port.
+  - job_name: host-services
+    static_configs:
+      - targets: ["host.docker.internal:8081"]
+        labels:
+          source: host

@@ -16,6 +16,8 @@ GO_MODULES := $(filter-out tools,$(notdir $(patsubst %/,%,$(dir $(wildcard */go.
 PROFILE ?= core
 comma := ,
 COMPOSE_PROFILES := $(subst $(comma), ,$(PROFILE))
+# "all" selects every profile; otherwise one --profile flag per requested profile.
+PROFILE_FLAGS := $(if $(filter all,$(COMPOSE_PROFILES)),--profile '*',$(foreach p,$(COMPOSE_PROFILES),--profile $(p)))
 COMPOSE := docker compose --project-name infrapilot --env-file $(ROOT)/.env -f $(ROOT)/deploy/compose/docker-compose.yml
 KIND_CLUSTER ?= infrapilot
 KUBE_CONTEXT := kind-$(KIND_CLUSTER)
@@ -87,17 +89,17 @@ secrets: ## Create .env with random local secrets (never overwrites an existing 
 	@$(ROOT)/scripts/gen-env.sh
 
 up: .env ## Start compose profiles, e.g. make up PROFILE=core,obs
-	@COMPOSE_PROFILES=$(subst $(comma) ,$(comma),$(strip $(PROFILE))) $(COMPOSE) up -d --wait --wait-timeout 180
-	@$(COMPOSE) ps
+	@$(COMPOSE) $(PROFILE_FLAGS) up -d --wait --wait-timeout 180
+	@$(COMPOSE) --profile '*' ps
 
 down: .env ## Stop every InfraPilot compose service (VOLUMES=1 also deletes data)
-	@COMPOSE_PROFILES=all $(COMPOSE) down --remove-orphans $(if $(VOLUMES),--volumes,)
+	@$(COMPOSE) --profile '*' down --remove-orphans $(if $(VOLUMES),--volumes,)
 
 ps: .env
-	@COMPOSE_PROFILES=all $(COMPOSE) ps
+	@$(COMPOSE) --profile '*' ps
 
 logs: .env
-	@COMPOSE_PROFILES=all $(COMPOSE) logs -f --tail=100
+	@$(COMPOSE) --profile '*' logs -f --tail=100
 
 cluster: ## Create the local kind cluster (idempotent)
 	@if $(GOTOOL) kind get clusters 2>/dev/null | grep -qx $(KIND_CLUSTER); then echo "kind cluster $(KIND_CLUSTER) exists"; \
