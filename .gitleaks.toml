@@ -1,0 +1,12 @@
+# gitleaks configuration: default rules plus repository-specific allowlist.
+title = "InfraPilot"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Non-secret files"
+paths = [
+  '''\.env\.example$''',
+  '''go\.sum$''',
+]

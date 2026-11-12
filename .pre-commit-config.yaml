@@ -1,0 +1,19 @@
+# Pinned, local hooks: formatting and secret scanning before every commit.
+repos:
+  - repo: local
+    hooks:
+      - id: gofmt
+        name: gofmt
+        entry: bash -c 'out="$(gofmt -l "$@")"; if [ -n "$out" ]; then echo "$out"; exit 1; fi' --
+        language: system
+        types: [go]
+      - id: gitleaks
+        name: gitleaks (staged)
+        entry: go tool gitleaks git --pre-commit --staged --redact --no-banner --config .gitleaks.toml
+        language: system
+        pass_filenames: false
+      - id: no-local-only-paths
+        name: block .local-* paths
+        entry: bash -c 'if git diff --cached --name-only | grep -Eq "^\.local-(reports|reviews|evidence)/"; then echo "local-only evidence must not be committed"; exit 1; fi'
+        language: system
+        pass_filenames: false

@@ -9,7 +9,7 @@ Status values: `not started` · `in progress` · `done`. Update this file when a
 
 ---
 
-## M01 — Engineering platform · status: not started
+## M01 — Engineering platform · status: in progress
 
 **Scope**
 - Repo skeleton per ADR-0001/0016: `go.work`, `pkg/` module, `gen/`, `contracts/`, `deploy/`, `observability/`, `tests/`.
