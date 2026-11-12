@@ -87,6 +87,7 @@ type Common struct {
 
 	Log       Log       `envPrefix:"LOG_"`
 	HTTP      HTTP      `envPrefix:"HTTP_"`
+	Admin     Admin     `envPrefix:"ADMIN_"`
 	GRPC      GRPC      `envPrefix:"GRPC_"`
 	Shutdown  Shutdown  `envPrefix:"SHUTDOWN_"`
 	Telemetry Telemetry `envPrefix:"OTEL_"`
@@ -238,4 +239,11 @@ func collectKeys(t reflect.Type, prefix string, out map[string][]string) {
 			collectKeys(ft, prefix+f.Tag.Get("envPrefix"), out)
 		}
 	}
+}
+
+// Admin configures the operations listener (/healthz, /readyz, /metrics, optional pprof). It is bound
+// to a separate port so that it is never exposed through the public ingress.
+type Admin struct {
+	Addr  string `env:"ADDR" envDefault:":8081"`
+	Pprof bool   `env:"PPROF" envDefault:"false"`
 }
