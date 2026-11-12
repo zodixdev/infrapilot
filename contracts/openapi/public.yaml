@@ -1,0 +1,184 @@
+openapi: 3.0.3
+info:
+  title: InfraPilot Public API
+  version: 1.0.0
+  description: |
+    Public REST API of InfraPilot. Conventions (ADR-0003):
+
+    * Versioned by path prefix `/v1`.
+    * Errors are RFC 9457 problem documents (`application/problem+json`, schema `Problem`).
+    * List endpoints use cursor pagination: `limit` + `cursor` query parameters, `next_cursor` in the response.
+    * `POST` requests that create resources accept an `Idempotency-Key` header; replays return the original result.
+    * Authentication is either a user access token (OIDC, `Authorization: Bearer <jwt>`) or a project API key
+      (`X-API-Key: ipk_...`). API keys carry scopes (`ingest`, `read`, `write`).
+  contact:
+    name: InfraPilot
+  license:
+    name: Apache-2.0
+servers:
+  - url: https://api.infrapilot.example.com/v1
+    description: Production
+  - url: http://localhost:8080/v1
+    description: Local gateway
+security:
+  - OIDC: []
+  - ApiKey: []
+tags:
+  - name: meta
+    description: Service metadata
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Gateway health
+      description: Liveness of the public API edge. Does not reflect downstream services.
+      tags: [meta]
+      security: []
+      responses:
+        "200":
+          description: Gateway is alive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        default:
+          $ref: "#/components/responses/Problem"
+components:
+  securitySchemes:
+    OIDC:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Keycloak-issued access token (Authorization Code + PKCE).
+    ApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Project-scoped API key with the `ipk_` prefix. Shown once at creation; stored hashed.
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      description: Maximum number of items to return.
+      required: false
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+        maximum: 200
+        default: 50
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque cursor from a previous response's `next_cursor`.
+      required: false
+      schema:
+        type: string
+        maxLength: 512
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: Client-generated unique key (UUID recommended) making a create request safe to retry for 24 h.
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+  headers:
+    RateLimitLimit:
+      description: Request quota for the current window.
+      schema:
+        type: integer
+    RateLimitRemaining:
+      description: Requests remaining in the current window.
+      schema:
+        type: integer
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      schema:
+        type: integer
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+    Problem:
+      type: object
+      description: RFC 9457 problem details, extended with a stable machine-readable `code` and the request `trace_id`.
+      required: [type, title, status, code, trace_id]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: URI identifying the problem type; `about:blank` when the status code says it all.
+          example: https://infrapilot.example.com/problems/validation
+        title:
+          type: string
+          example: Request validation failed
+        status:
+          type: integer
+          format: int32
+          minimum: 100
+          maximum: 599
+        detail:
+          type: string
+          description: Human-readable, request-specific explanation. Never contains secrets or stack traces.
+        instance:
+          type: string
+          format: uri-reference
+          description: Request path that produced the problem.
+        code:
+          type: string
+          description: Stable machine-readable error code.
+          enum:
+            - validation_failed
+            - unauthenticated
+            - permission_denied
+            - not_found
+            - conflict
+            - idempotency_key_reused
+            - rate_limited
+            - quota_exceeded
+            - internal
+            - unavailable
+        trace_id:
+          type: string
+          description: Trace id to quote in support requests.
+        errors:
+          type: array
+          description: Field-level violations for `validation_failed`.
+          items:
+            $ref: "#/components/schemas/FieldError"
+    FieldError:
+      type: object
+      required: [field, message]
+      properties:
+        field:
+          type: string
+          description: JSON pointer or query/header name.
+        message:
+          type: string
+    PageInfo:
+      type: object
+      description: Cursor pagination metadata returned by every list endpoint.
+      required: [has_more]
+      properties:
+        next_cursor:
+          type: string
+          nullable: true
+          description: Pass as `cursor` to fetch the next page; absent on the last page.
+        has_more:
+          type: boolean
+  responses:
+    Problem:
+      description: Error
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"

@@ -1,0 +1,8 @@
+# Generates the shared public API types (error model, pagination) into gen/go/openapi/public.
+# Endpoint-level server code is generated per service from M02 on, using the same document.
+package: publicapi
+output: ../../gen/go/openapi/public/types.gen.go
+generate:
+  models: true
+output-options:
+  skip-prune: true

@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package infrapilot.events.v1;
+
+import "google/protobuf/any.proto";
+import "google/protobuf/timestamp.proto";
+
+// Envelope wraps every message published to Kafka (events) or RabbitMQ (tasks).
+// Conventions are documented in contracts/events/README.md and docs/architecture/data.md §6.
+message Envelope {
+  // Unique id of this message (UUIDv7, time-ordered). Consumers dedupe on it.
+  string event_id = 1;
+  // Dot-separated type: "<domain>.<entity>.<past-tense-verb>" for events,
+  // "<domain>.<verb>" for tasks, e.g. "incident.incident.opened", "notifications.deliver".
+  string event_type = 2;
+  // Schema version of the payload message; starts at 1. Consumers must accept every version still produced.
+  uint32 schema_version = 3;
+  // Owning tenant (UUID). Set for all tenant data; empty only for platform-level messages.
+  string organization_id = 4;
+  // Entity the message is about (check id, incident id, agent id, ...); also the Kafka partition key component.
+  string subject_id = 5;
+  // When the fact happened in the domain.
+  google.protobuf.Timestamp occurred_at = 6;
+  // When the producer created this envelope (typically the outbox insert time).
+  google.protobuf.Timestamp produced_at = 7;
+  // Producing service name, e.g. "incident-engine".
+  string producer = 8;
+  // W3C traceparent of the producing span; also carried as a transport header.
+  string trace_parent = 9;
+  // Typed payload. The type URL identifies the concrete message.
+  google.protobuf.Any payload = 10;
+}
