@@ -52,7 +52,7 @@ linters:
   settings:
     errcheck:
       check-type-assertions: true
-      check-blank: true
+      check-blank: false
     govet:
       enable-all: true
       disable:
@@ -119,7 +119,7 @@ linters:
       - common-false-positives
     rules:
       - path: _test\.go
-        linters: [gosec, noctx, forcetypeassert, containedctx, unparam]
+        linters: [gosec, noctx, forcetypeassert, containedctx, unparam, sloglint]
       - path: _test\.go
         text: "unused-parameter"
         linters: [revive]

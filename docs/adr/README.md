@@ -23,6 +23,7 @@ and list it in the milestone report so the owner can review it later.
 | [0015](0015-ai-boundary.md) | AI is advisory; deterministic evidence first, LLM summarizes |
 | [0016](0016-go-service-stack.md) | Go libraries and service template |
 | [0017](0017-frontend.md) | Next.js App Router + Auth.js (Keycloak) |
+| [0019](0019-self-telemetry-wiring.md) | Self-telemetry wiring: metrics pulled from /metrics, traces pushed over OTLP (refines 0012) |
 | [0020](0020-openapi-document-version.md) | Public OpenAPI document stays on 3.0.3 until the generator proves 3.1 support (partially supersedes 0003) |
 | [0021](0021-tool-pinning.md) | Toolchain pinned with Go `tool` directives + Brewfile |
 
