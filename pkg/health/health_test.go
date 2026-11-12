@@ -131,3 +131,11 @@ func TestHandlers(t *testing.T) {
 	r.ReadinessHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody))
 	require.Equal(t, http.StatusOK, rec.Code)
 }
+
+func TestResult_JSONDurationInMilliseconds(t *testing.T) {
+	t.Parallel()
+	b, err := json.Marshal(health.Result{Status: health.StatusUp, Duration: 1500 * time.Microsecond, CheckedAt: time.Unix(0, 0).UTC()})
+	require.NoError(t, err)
+	require.Contains(t, string(b), `"duration_ms":1.5`)
+	require.NotContains(t, string(b), `"Duration"`)
+}

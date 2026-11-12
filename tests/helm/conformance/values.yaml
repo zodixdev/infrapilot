@@ -1,0 +1,59 @@
+nameOverride: conformance
+image:
+  repository: infrapilot/conformance
+  tag: dev
+  pullPolicy: IfNotPresent
+replicaCount: 2
+env:
+  - name: ENVIRONMENT
+    value: test
+  - name: LOG_LEVEL
+    value: info
+  - name: DATABASE_URL
+    valueFrom:
+      secretKeyRef:
+        name: conformance-postgres
+        key: app-url
+envFrom:
+  - configMapRef:
+      name: conformance-otlp
+# OTLP collector reachable from the kind nodes (docker compose obs profile on the host).
+otlp:
+  endpoint: host.docker.internal:4317
+  insecure: true
+shutdown:
+  delaySeconds: 2
+  timeoutSeconds: 20
+migration:
+  enabled: true
+  args: [migrate]
+  env:
+    - name: DATABASE_URL
+      valueFrom:
+        secretKeyRef:
+          name: conformance-postgres
+          key: migrator-url
+networkPolicy:
+  enabled: true
+  ingress:
+    # helm test pods and the e2e traffic generator run in the release namespace.
+    - podSelector: {}
+  egress:
+    rules:
+      - to:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: conformance-postgres
+        ports:
+          - port: 5432
+            protocol: TCP
+      # OTLP to the host collector (docker compose obs profile).
+      - to:
+          - ipBlock:
+              cidr: 0.0.0.0/0
+        ports:
+          - port: 4317
+            protocol: TCP
+# Test-only PostgreSQL deployed next to the service (never used by real service charts).
+postgres:
+  image: postgres:17.6-alpine

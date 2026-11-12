@@ -22,6 +22,8 @@ COMPOSE := docker compose --project-name infrapilot --env-file $(ROOT)/.env -f $
 KIND_CLUSTER ?= infrapilot
 KUBE_CONTEXT := kind-$(KIND_CLUSTER)
 CONFORMANCE_IMAGE ?= infrapilot/conformance:dev
+# OTLP endpoint the conformance pods push to (host compose stack). Linux CI uses the docker bridge gateway.
+OTLP_ENDPOINT ?= host.docker.internal:4317
 HELM_RELEASE ?= conformance
 HELM_NAMESPACE ?= infrapilot-test
 
@@ -117,7 +119,8 @@ deploy: image ## Install the conformance chart (built on infrapilot-lib) into ki
 	@helm dependency update $(ROOT)/tests/helm/conformance >/dev/null
 	@helm --kube-context $(KUBE_CONTEXT) upgrade --install $(HELM_RELEASE) $(ROOT)/tests/helm/conformance \
 	    --namespace $(HELM_NAMESPACE) --create-namespace --wait --timeout 180s \
-	    --set image.repository=$(firstword $(subst :, ,$(CONFORMANCE_IMAGE))) --set image.tag=$(lastword $(subst :, ,$(CONFORMANCE_IMAGE)))
+	    --set image.repository=$(firstword $(subst :, ,$(CONFORMANCE_IMAGE))) --set image.tag=$(lastword $(subst :, ,$(CONFORMANCE_IMAGE))) \
+	    --set otlp.endpoint=$(OTLP_ENDPOINT)
 	@helm --kube-context $(KUBE_CONTEXT) test $(HELM_RELEASE) --namespace $(HELM_NAMESPACE) --logs
 
 e2e: ## Verify the deployed conformance service reports traces/metrics to the obs profile (needs make up PROFILE=obs)

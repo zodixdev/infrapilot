@@ -101,7 +101,7 @@ func TestCommon_Validate(t *testing.T) {
 		{"zero timeout", map[string]string{"HTTP_READ_TIMEOUT": "0s"}, "HTTP_* timeouts"},
 		{"negative delay", map[string]string{"SHUTDOWN_DELAY": "-1s"}, "SHUTDOWN_DELAY"},
 		{"sampler out of range", map[string]string{"OTEL_TRACES_SAMPLER_ARG": "1.5"}, "OTEL_TRACES_SAMPLER_ARG"},
-		{"metrics push without endpoint", map[string]string{"OTEL_METRICS_PUSH": "true"}, "OTEL_METRICS_PUSH"},
+		{"metrics push without endpoint", map[string]string{"TELEMETRY_METRICS_PUSH": "true"}, "TELEMETRY_METRICS_PUSH"},
 		{"insecure otlp in prod", map[string]string{"ENVIRONMENT": "prod", "OTEL_EXPORTER_OTLP_ENDPOINT": "c:4317", "OTEL_EXPORTER_OTLP_INSECURE": "true"}, "OTEL_EXPORTER_OTLP_INSECURE"},
 		{"reflection in prod", map[string]string{"ENVIRONMENT": "prod", "GRPC_REFLECTION": "true"}, "GRPC_REFLECTION"},
 	}

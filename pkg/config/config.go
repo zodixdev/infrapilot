@@ -85,12 +85,12 @@ type Common struct {
 	// Version is injected by the build (ldflags → env in the container, or set by main).
 	Version string `env:"SERVICE_VERSION" envDefault:"dev"`
 
-	Log       Log       `envPrefix:"LOG_"`
-	HTTP      HTTP      `envPrefix:"HTTP_"`
-	Admin     Admin     `envPrefix:"ADMIN_"`
-	GRPC      GRPC      `envPrefix:"GRPC_"`
-	Shutdown  Shutdown  `envPrefix:"SHUTDOWN_"`
-	Telemetry Telemetry `envPrefix:"OTEL_"`
+	Log       Log      `envPrefix:"LOG_"`
+	HTTP      HTTP     `envPrefix:"HTTP_"`
+	Admin     Admin    `envPrefix:"ADMIN_"`
+	GRPC      GRPC     `envPrefix:"GRPC_"`
+	Shutdown  Shutdown `envPrefix:"SHUTDOWN_"`
+	Telemetry Telemetry
 }
 
 // Log configures the slog logger.
@@ -131,17 +131,19 @@ type Shutdown struct {
 	Timeout time.Duration `env:"TIMEOUT" envDefault:"25s"`
 }
 
-// Telemetry configures OpenTelemetry export (ADR-0012, ADR-0019).
+// Telemetry configures OpenTelemetry export (ADR-0012, ADR-0019). Names that exist in the OpenTelemetry
+// environment specification keep their standard spelling and semantics; InfraPilot-specific settings use
+// the TELEMETRY_ prefix so the SDK never parses them with different units.
 type Telemetry struct {
 	// ExporterOTLPEndpoint is host:port of the collector's OTLP/gRPC receiver; empty disables push export.
-	ExporterOTLPEndpoint string `env:"EXPORTER_OTLP_ENDPOINT" envDefault:""`
-	ExporterOTLPInsecure bool   `env:"EXPORTER_OTLP_INSECURE" envDefault:"false"`
+	ExporterOTLPEndpoint string `env:"OTEL_EXPORTER_OTLP_ENDPOINT" envDefault:""`
+	ExporterOTLPInsecure bool   `env:"OTEL_EXPORTER_OTLP_INSECURE" envDefault:"false"`
 	// TracesSamplerArg is the parent-based trace id ratio (0..1).
-	TracesSamplerArg float64 `env:"TRACES_SAMPLER_ARG" envDefault:"1.0"`
+	TracesSamplerArg float64 `env:"OTEL_TRACES_SAMPLER_ARG" envDefault:"1.0"`
 	// MetricsPush additionally pushes metrics over OTLP (pull on /metrics is always on).
-	MetricsPush    bool          `env:"METRICS_PUSH" envDefault:"false"`
-	ExportInterval time.Duration `env:"METRIC_EXPORT_INTERVAL" envDefault:"15s"`
-	ExportTimeout  time.Duration `env:"EXPORTER_TIMEOUT" envDefault:"10s"`
+	MetricsPush    bool          `env:"TELEMETRY_METRICS_PUSH" envDefault:"false"`
+	ExportInterval time.Duration `env:"TELEMETRY_METRIC_EXPORT_INTERVAL" envDefault:"15s"`
+	ExportTimeout  time.Duration `env:"TELEMETRY_EXPORT_TIMEOUT" envDefault:"10s"`
 }
 
 // Validate implements Validator.
@@ -178,7 +180,7 @@ func (c *Common) Validate() error {
 		errs = append(errs, errors.New("OTEL_TRACES_SAMPLER_ARG must be within [0, 1]"))
 	}
 	if c.Telemetry.MetricsPush && c.Telemetry.ExporterOTLPEndpoint == "" {
-		errs = append(errs, errors.New("OTEL_METRICS_PUSH requires OTEL_EXPORTER_OTLP_ENDPOINT"))
+		errs = append(errs, errors.New("TELEMETRY_METRICS_PUSH requires OTEL_EXPORTER_OTLP_ENDPOINT"))
 	}
 	if c.Environment == EnvProd && c.Telemetry.ExporterOTLPEndpoint != "" && c.Telemetry.ExporterOTLPInsecure {
 		errs = append(errs, errors.New("OTEL_EXPORTER_OTLP_INSECURE is not allowed in prod"))

@@ -1,0 +1,14 @@
+{{- /* Exporter settings as a ConfigMap so the collector address can differ per environment (--set otlp.endpoint). */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: conformance-otlp
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: conformance
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ required "otlp.endpoint is required" .Values.otlp.endpoint | quote }}
+  OTEL_EXPORTER_OTLP_INSECURE: {{ .Values.otlp.insecure | quote }}
+  TELEMETRY_METRICS_PUSH: "true"
+  TELEMETRY_METRIC_EXPORT_INTERVAL: 5s

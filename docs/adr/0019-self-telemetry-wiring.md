@@ -23,14 +23,14 @@ appear in Tempo/Prometheus while the obs stack runs in docker compose on the hos
 ## Decision
 Option 1, implemented in `pkg/telemetry`:
 - One `sdkmetric.MeterProvider` with a Prometheus reader (always) and a periodic OTLP reader when
-  `OTEL_METRICS_PUSH=true` and `OTEL_EXPORTER_OTLP_ENDPOINT` is set. The Prometheus registry also registers
+  `TELEMETRY_METRICS_PUSH=true` and `OTEL_EXPORTER_OTLP_ENDPOINT` is set (spec-defined names keep their OTel spelling; InfraPilot-specific ones use `TELEMETRY_`). The Prometheus registry also registers
   `collectors.NewGoCollector()` and `NewProcessCollector()` so standard `go_*`/`process_*` series exist.
 - One `sdktrace.TracerProvider` with parent-based ratio sampling; batch OTLP/gRPC exporter when the endpoint is set.
 - Logs are JSON on stdout with `trace_id`/`span_id` (pkg/log); the compose/k8s log pipeline ships them to Loki.
 - Resource attributes: `service.name`, `service.version`, `service.instance.id` (hostname/pod), `deployment.environment.name`.
 - The collector config in `observability/` accepts OTLP (traces + metrics), remote-writes metrics to Prometheus
   (`--web.enable-remote-write-receiver`) and sends traces to Tempo. In Kubernetes, Prometheus scrapes via
-  `ServiceMonitor`; in compose and kind-to-host runs, services push with `OTEL_METRICS_PUSH=true`.
+  `ServiceMonitor`; in compose and kind-to-host runs, services push with `TELEMETRY_METRICS_PUSH=true`.
 
 ## Consequences
 - Good: metrics survive a collector outage; `up` and scrape duration are available; dashboards use untranslated names;
