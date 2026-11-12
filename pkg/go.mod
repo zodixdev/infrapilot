@@ -2,6 +2,8 @@ module github.com/zodixdev/infrapilot/pkg
 
 go 1.27.2
 
+toolchain go1.27.4
+
 replace github.com/zodixdev/infrapilot/gen => ../gen
 
 require (

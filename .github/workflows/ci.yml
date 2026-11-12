@@ -17,7 +17,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  GOTOOLCHAIN: local
+  # Toolchain is pinned by the `toolchain` directive in go.work; auto mode lets setup-go honour it.
+  GOTOOLCHAIN: auto
   GOFLAGS: -buildvcs=false
 
 jobs:
