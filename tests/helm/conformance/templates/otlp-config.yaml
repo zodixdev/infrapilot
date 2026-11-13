@@ -1,4 +1,4 @@
-{{- /* Exporter settings as a ConfigMap so the collector address can differ per environment (--set otlp.endpoint). */ -}}
+{{- /* Exporter settings and the matching egress rule, so the collector address can differ per environment. */ -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -11,4 +11,32 @@ data:
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ required "otlp.endpoint is required" .Values.otlp.endpoint | quote }}
   OTEL_EXPORTER_OTLP_INSECURE: {{ .Values.otlp.insecure | quote }}
   TELEMETRY_METRICS_PUSH: "true"
+  TELEMETRY_LOGS_PUSH: "true"
   TELEMETRY_METRIC_EXPORT_INTERVAL: 5s
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: conformance-otlp-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: conformance
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: conformance
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: server
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.otlp.egressCIDR }}
+            {{- with .Values.otlp.egressExcept }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+      ports:
+        - port: 4317
+          protocol: TCP

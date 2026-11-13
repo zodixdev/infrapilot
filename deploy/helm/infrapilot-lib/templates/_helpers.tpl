@@ -26,6 +26,18 @@ app.kubernetes.io/name: {{ include "infrapilot-lib.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
+{{/* Selector for the serving pods only: migration and test pods share name/instance but not the component. */}}
+{{- define "infrapilot-lib.workloadSelectorLabels" -}}
+{{ include "infrapilot-lib.selectorLabels" . }}
+app.kubernetes.io/component: server
+{{- end -}}
+
+{{/* Version reported by the service: the image digest or tag being deployed, falling back to appVersion. */}}
+{{- define "infrapilot-lib.version" -}}
+{{- $v := include "infrapilot-lib.values" . | fromYaml -}}
+{{- if $v.image.digest -}}{{ $v.image.digest | trunc 19 }}{{- else -}}{{ default .Chart.AppVersion $v.image.tag | toString }}{{- end -}}
+{{- end -}}
+
 {{- define "infrapilot-lib.labels" -}}
 {{ include "infrapilot-lib.selectorLabels" . }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | default "0.0.0" | quote }}
@@ -55,7 +67,7 @@ helm.sh/chart: {{ include "infrapilot-lib.chart" . }}
 - name: SERVICE_NAME
   value: {{ include "infrapilot-lib.name" . | quote }}
 - name: SERVICE_VERSION
-  value: {{ .Chart.AppVersion | default "0.0.0" | quote }}
+  value: {{ include "infrapilot-lib.version" . | quote }}
 - name: POD_NAME
   valueFrom:
     fieldRef:

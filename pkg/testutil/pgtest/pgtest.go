@@ -1,10 +1,12 @@
 // Package pgtest starts a disposable PostgreSQL container for integration tests and provisions the
-// three roles of ADR-0018 so tests exercise the real privilege model.
+// three roles of ADR-0018 exactly as production provisioning does, so tests exercise the real
+// privilege model.
 package pgtest
 
 import (
 	"context"
-	"fmt"
+	"crypto/rand"
+	"encoding/hex"
 	"net/url"
 	"os/exec"
 	"testing"
@@ -20,7 +22,7 @@ import (
 // Image is the pinned PostgreSQL image used by all integration tests (matches the compose core profile).
 const Image = "postgres:17.6-alpine"
 
-// Roles created in the test database (passwords are random per container).
+// Roles created in the test database.
 const (
 	MigratorRole = "svc_migrator"
 	AppRole      = "svc_app"
@@ -42,11 +44,10 @@ func Start(t *testing.T) *DB {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
-	pw := "pw_" + t.Name()
 	c, err := tcpostgres.Run(ctx, Image,
 		tcpostgres.WithDatabase(Database),
 		tcpostgres.WithUsername("postgres"),
-		tcpostgres.WithPassword("postgres"),
+		tcpostgres.WithPassword(randomSecret(t)),
 		testcontainers.WithWaitStrategy(wait.ForLog("database system is ready to accept connections").
 			WithOccurrence(2).WithStartupTimeout(60*time.Second)),
 	)
@@ -60,25 +61,87 @@ func Start(t *testing.T) *DB {
 	conn, err := pgx.Connect(ctx, superURL)
 	require.NoError(t, err)
 	defer func() { _ = conn.Close(ctx) }()
-	stmts := []string{
-		fmt.Sprintf(`CREATE ROLE %s LOGIN PASSWORD '%s' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`, MigratorRole, pw),
-		fmt.Sprintf(`CREATE ROLE %s LOGIN PASSWORD '%s' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`, AppRole, pw),
-		fmt.Sprintf(`CREATE ROLE %s LOGIN PASSWORD '%s' NOSUPERUSER NOCREATEDB NOCREATEROLE BYPASSRLS`, BatchRole, pw),
-		`GRANT ALL ON SCHEMA public TO ` + MigratorRole,
-		fmt.Sprintf(`GRANT USAGE ON SCHEMA public TO %s, %s`, AppRole, BatchRole),
-		`ALTER DATABASE ` + Database + ` OWNER TO ` + MigratorRole,
+
+	pw := map[string]string{MigratorRole: randomSecret(t), AppRole: randomSecret(t), BatchRole: randomSecret(t)}
+	_, err = conn.Exec(ctx, `SET log_min_error_statement = panic`) // never log provisioning statements
+	require.NoError(t, err)
+	for _, role := range []struct {
+		name   string
+		bypass bool
+	}{{MigratorRole, false}, {AppRole, false}, {BatchRole, true}} {
+		attrs := "NOBYPASSRLS"
+		if role.bypass {
+			attrs = "BYPASSRLS"
+		}
+		ident := pgx.Identifier{role.name}.Sanitize()
+		_, err = conn.Exec(ctx, `CREATE ROLE `+ident+` LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE `+attrs)
+		require.NoError(t, err)
+		// PASSWORD does not accept bind parameters; the value is random hex, quoted defensively.
+		_, err = conn.Exec(ctx, `ALTER ROLE `+ident+` PASSWORD `+quoteLiteral(pw[role.name]))
+		require.NoError(t, err)
 	}
-	for _, s := range stmts {
+	// The maintenance database is not a service database: nobody but the superuser connects to it.
+	_, err = conn.Exec(ctx, `REVOKE CONNECT ON DATABASE postgres FROM PUBLIC`)
+	require.NoError(t, err)
+	for _, s := range append(ProvisioningSQL(Database, MigratorRole, AppRole, BatchRole), SchemaSQL(MigratorRole, AppRole, BatchRole)...) {
 		_, err := conn.Exec(ctx, s)
 		require.NoError(t, err, s)
 	}
 	return &DB{
 		container:    c,
 		SuperuserURL: superURL,
-		MigratorURL:  withUser(t, superURL, MigratorRole, pw),
-		AppURL:       withUser(t, superURL, AppRole, pw),
-		BatchURL:     withUser(t, superURL, BatchRole, pw),
+		MigratorURL:  withUser(t, superURL, MigratorRole, pw[MigratorRole]),
+		AppURL:       withUser(t, superURL, AppRole, pw[AppRole]),
+		BatchURL:     withUser(t, superURL, BatchRole, pw[BatchRole]),
 	}
+}
+
+// ProvisioningSQL is the per-database privilege setup of ADR-0018, shared with the compose init
+// script's intent: database-level PUBLIC privileges revoked, schema owned by the migrator, server-side
+// timeouts as role defaults. Default privileges are NOT granted here: every migration grants its own
+// tables explicitly, so all environments behave the same.
+func ProvisioningSQL(db, migrator, app, batch string) []string {
+	d, m, a, b := pgx.Identifier{db}.Sanitize(), pgx.Identifier{migrator}.Sanitize(), pgx.Identifier{app}.Sanitize(), pgx.Identifier{batch}.Sanitize()
+	return []string{
+		`REVOKE ALL ON DATABASE ` + d + ` FROM PUBLIC`,
+		`ALTER DATABASE ` + d + ` OWNER TO ` + m,
+		`GRANT CONNECT ON DATABASE ` + d + ` TO ` + m + `, ` + a + `, ` + b,
+		`ALTER ROLE ` + a + ` SET statement_timeout = '30s'`,
+		`ALTER ROLE ` + a + ` SET lock_timeout = '5s'`,
+		`ALTER ROLE ` + a + ` SET idle_in_transaction_session_timeout = '60s'`,
+		`ALTER ROLE ` + b + ` SET statement_timeout = '15min'`,
+		`ALTER ROLE ` + b + ` SET idle_in_transaction_session_timeout = '5min'`,
+		`ALTER ROLE ` + m + ` SET lock_timeout = '3s'`,
+	}
+}
+
+// SchemaSQL is run inside the service database (as superuser) after ProvisioningSQL.
+func SchemaSQL(migrator, app, batch string) []string {
+	m, a, b := pgx.Identifier{migrator}.Sanitize(), pgx.Identifier{app}.Sanitize(), pgx.Identifier{batch}.Sanitize()
+	return []string{
+		`REVOKE ALL ON SCHEMA public FROM PUBLIC`,
+		`ALTER SCHEMA public OWNER TO ` + m,
+		`GRANT USAGE ON SCHEMA public TO ` + a + `, ` + b,
+	}
+}
+
+func randomSecret(t *testing.T) string {
+	t.Helper()
+	b := make([]byte, 18)
+	_, err := rand.Read(b)
+	require.NoError(t, err)
+	return hex.EncodeToString(b)
+}
+
+func quoteLiteral(s string) string {
+	out := []byte{'\''}
+	for i := range len(s) {
+		if s[i] == '\'' {
+			out = append(out, '\'')
+		}
+		out = append(out, s[i])
+	}
+	return string(append(out, '\''))
 }
 
 func withUser(t *testing.T, base, user, pw string) string {

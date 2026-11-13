@@ -36,3 +36,6 @@ node_modules/
 
 # Helm packaged dependencies (rebuilt by helm dependency update)
 **/charts/*.tgz
+
+# Stray `go build` outputs of command packages
+/tests/conformance

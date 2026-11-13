@@ -79,9 +79,11 @@ probes:
 shutdown:
   delaySeconds: 5
   timeoutSeconds: 25
+# Rendered only when at least two replicas are guaranteed (replicaCount, or hpa.minReplicas with HPA):
+# a PDB over a single replica blocks every node drain.
 pdb:
   enabled: true
-  minAvailable: 1
+  maxUnavailable: 1
 hpa:
   enabled: false
   minReplicas: 2
@@ -89,6 +91,9 @@ hpa:
   targetCPUUtilizationPercentage: 70
   targetMemoryUtilizationPercentage: null
 topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
   - maxSkew: 1
     topologyKey: kubernetes.io/hostname
     whenUnsatisfiable: ScheduleAnyway
@@ -119,6 +124,8 @@ serviceMonitor:
   labels: {}
 migration:
   enabled: false
+  # Egress for the migration job (its own NetworkPolicy; DNS is always allowed). Typically the DB only.
+  egress: []
   command: []
   args: []
   env: []
@@ -132,8 +139,10 @@ migration:
       memory: 64Mi
     limits:
       memory: 256Mi
+# helm test pods. Off by default: enabling them also opens the http/admin/grpc ports to this release's test
+# pods (and only those) in the NetworkPolicy. Test and CI environments turn it on.
 tests:
-  enabled: true
+  enabled: false
   curlImage: curlimages/curl:8.17.0
   grpcHealthProbeImage: ghcr.io/grpc-ecosystem/grpc-health-probe:v0.4.40
 {{- end -}}

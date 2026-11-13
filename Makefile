@@ -12,6 +12,7 @@ GOTOOL := $(GO) tool
 GO_TOOLS := golangci-lint buf protoc-gen-go protoc-gen-go-grpc sqlc goose oapi-codegen kubeconform govulncheck gitleaks kind
 # Go modules that contain code we lint and test (tools/ holds only tool directives).
 GO_MODULES := $(filter-out tools,$(notdir $(patsubst %/,%,$(dir $(wildcard */go.mod)))))
+ALL_GO_MODULES := $(notdir $(patsubst %/,%,$(dir $(wildcard */go.mod))))
 
 PROFILE ?= core
 comma := ,
@@ -22,14 +23,15 @@ COMPOSE := docker compose --project-name infrapilot --env-file $(ROOT)/.env -f $
 KIND_CLUSTER ?= infrapilot
 KUBE_CONTEXT := kind-$(KIND_CLUSTER)
 # Unique tag per revision so `make deploy` always rolls the pods (a fixed tag + IfNotPresent would not).
-GIT_REV := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)$(shell git diff --quiet 2>/dev/null || echo -dirty)
+# Dirty trees get a hash of the diff so two different uncommitted builds never share a tag.
+GIT_REV := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)$(shell git diff --quiet HEAD 2>/dev/null || echo -dirty-$$(git diff HEAD | shasum | cut -c1-8))
 CONFORMANCE_IMAGE ?= infrapilot/conformance:$(GIT_REV)
 # OTLP endpoint the conformance pods push to (host compose stack). Linux CI uses the docker bridge gateway.
 OTLP_ENDPOINT ?= host.docker.internal:4317
 HELM_RELEASE ?= conformance
 HELM_NAMESPACE ?= infrapilot-test
 
-.PHONY: help bootstrap gen fmt fmt-check lint lint-go lint-proto lint-helm lint-obs lint-docker vuln \
+.PHONY: help bootstrap gen fmt fmt-check lint lint-go lint-proto lint-helm lint-obs lint-docker vuln db-provision deploy-only \
         test test-integration verify secrets up down ps logs cluster cluster-down image deploy e2e clean
 
 help: ## List targets
@@ -60,7 +62,7 @@ fmt-check:
 lint: fmt-check lint-go lint-proto lint-helm lint-obs lint-docker ## All linters
 
 lint-go:
-	@for m in $(GO_MODULES); do echo "golangci-lint: $$m"; (cd $(ROOT)/$$m && $(GOTOOL) golangci-lint run ./...); done
+	@for m in $(GO_MODULES); do echo "golangci-lint: $$m"; (cd $(ROOT)/$$m && $(GOTOOL) golangci-lint run ./...) || exit 1; done
 
 lint-proto:
 	@cd $(ROOT)/contracts && $(GOTOOL) buf lint
@@ -75,18 +77,18 @@ lint-obs:
 lint-docker:
 	@if command -v hadolint >/dev/null; then find $(ROOT) -name Dockerfile -not -path '*/node_modules/*' -print0 | xargs -0 -r hadolint; else echo "hadolint not installed, skipping"; fi
 
-vuln: ## govulncheck over all Go modules
-	@for m in $(GO_MODULES); do echo "govulncheck: $$m"; (cd $(ROOT)/$$m && $(GOTOOL) govulncheck ./...); done
+vuln: ## govulncheck over all Go modules, including the pinned tools
+	@for m in $(ALL_GO_MODULES); do echo "govulncheck: $$m"; (cd $(ROOT)/$$m && $(GOTOOL) govulncheck ./...) || exit 1; done
 
 test: ## Unit tests with the race detector
-	@for m in $(GO_MODULES); do echo "go test: $$m"; (cd $(ROOT)/$$m && $(GO) test -race -count=1 -timeout 10m ./...); done
+	@for m in $(GO_MODULES); do echo "go test: $$m"; (cd $(ROOT)/$$m && $(GO) test -race -count=1 -timeout 10m ./...) || exit 1; done
 
 test-integration: ## Integration tests against real dependencies (testcontainers; needs Docker)
-	@for m in $(GO_MODULES); do echo "go test (integration): $$m"; (cd $(ROOT)/$$m && $(GO) test -race -count=1 -p 1 -timeout 20m -tags integration ./...); done
+	@for m in $(GO_MODULES); do echo "go test (integration): $$m"; (cd $(ROOT)/$$m && $(GO) test -race -count=1 -p 1 -timeout 20m -tags integration ./...) || exit 1; done
 
 verify: lint test test-integration ## Everything CI runs; must stay green
 
-secrets: ## Create .env with random local secrets (never overwrites an existing one)
+secrets: ## Create .env with random local secrets, or add keys missing from an existing one
 	@$(ROOT)/scripts/gen-env.sh
 
 .env:
@@ -94,7 +96,11 @@ secrets: ## Create .env with random local secrets (never overwrites an existing 
 
 up: .env ## Start compose profiles, e.g. make up PROFILE=core,obs
 	@$(COMPOSE) $(PROFILE_FLAGS) up -d --wait --wait-timeout 180
+	@if $(COMPOSE) --profile '*' ps --status running --services | grep -qx postgres; then $(MAKE) db-provision; fi
 	@$(COMPOSE) --profile '*' ps
+
+db-provision: .env ## (Re)apply Postgres roles and databases for INFRAPILOT_SERVICES (idempotent, ADR-0018)
+	@$(COMPOSE) --profile core exec -T postgres bash /docker-entrypoint-initdb.d/01-roles.sh
 
 down: .env ## Stop every InfraPilot compose service (VOLUMES=1 also deletes data)
 	@$(COMPOSE) --profile '*' down --remove-orphans $(if $(VOLUMES),--volumes,)
@@ -116,11 +122,16 @@ cluster-down: ## Delete the local kind cluster
 image: ## Build the conformance image used to exercise the Helm library chart
 	@docker build -f $(ROOT)/tests/platform/conformance/Dockerfile -t $(CONFORMANCE_IMAGE) $(ROOT)
 
-deploy: image ## Install the conformance chart (built on infrapilot-lib) into kind and run helm test
+deploy: image deploy-only ## Build the conformance image, install the chart (built on infrapilot-lib) into kind, run helm test
+
+deploy-only: ## Install an already built CONFORMANCE_IMAGE (CI deploys the image it scanned) and run helm test
 	@$(GOTOOL) kind load docker-image $(CONFORMANCE_IMAGE) --name $(KIND_CLUSTER)
+	@kubectl --context $(KUBE_CONTEXT) create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl --context $(KUBE_CONTEXT) apply -f - >/dev/null
+	@kubectl --context $(KUBE_CONTEXT) label namespace $(HELM_NAMESPACE) --overwrite \
+	    pod-security.kubernetes.io/enforce=restricted pod-security.kubernetes.io/warn=restricted >/dev/null
 	@helm dependency update $(ROOT)/tests/helm/conformance >/dev/null
 	@helm --kube-context $(KUBE_CONTEXT) upgrade --install $(HELM_RELEASE) $(ROOT)/tests/helm/conformance \
-	    --namespace $(HELM_NAMESPACE) --create-namespace --wait --timeout 180s \
+	    --namespace $(HELM_NAMESPACE) --wait --timeout 180s \
 	    --set image.repository=$(firstword $(subst :, ,$(CONFORMANCE_IMAGE))) --set image.tag=$(lastword $(subst :, ,$(CONFORMANCE_IMAGE))) \
 	    --set otlp.endpoint=$(OTLP_ENDPOINT)
 	@helm --kube-context $(KUBE_CONTEXT) test $(HELM_RELEASE) --namespace $(HELM_NAMESPACE) --logs

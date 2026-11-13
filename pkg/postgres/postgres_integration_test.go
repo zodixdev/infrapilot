@@ -5,6 +5,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,7 +97,7 @@ func TestWithTx_Integration(t *testing.T) {
 		// Same pooled connection(s), new statement: the setting is gone.
 		for range 8 {
 			var after *string
-			require.NoError(t, pool.QueryRow(ctx, `SELECT NULLIF(current_setting('app.org_id', true), '')`).Scan(&after))
+			require.NoError(t, postgres.RawPool(pool).QueryRow(ctx, `SELECT NULLIF(current_setting('app.org_id', true), '')`).Scan(&after))
 			require.Nil(t, after, "tenant context leaked out of the transaction")
 		}
 	})
@@ -135,6 +136,10 @@ func TestWithTx_Integration(t *testing.T) {
 		batch, err := postgres.Open(ctx, postgres.Config{URL: db.BatchURL, ApplicationName: "nightly-report", MaxConns: 1})
 		require.NoError(t, err)
 		defer func() { require.NoError(t, batch.Shutdown(context.WithoutCancel(ctx))) }()
+		require.True(t, batch.BypassesRLS())
+		require.False(t, pool.BypassesRLS())
+		require.ErrorIs(t, batch.WithTx(ctx, orgA, func(context.Context, pgx.Tx) error { return nil }), postgres.ErrBypassRLS,
+			"tenant context is meaningless on a BYPASSRLS role; WithTx must refuse")
 		var seen []string
 		require.NoError(t, batch.WithSystemTx(ctx, func(ctx context.Context, tx pgx.Tx) (err error) { seen, err = bodies(ctx, tx); return err }, postgres.ReadOnly()))
 		require.Len(t, seen, 3)
@@ -209,13 +214,13 @@ func TestOpen_TimeoutsMetricsAndTracing_Integration(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, pool.Shutdown(context.WithoutCancel(t.Context()))) })
 
 	var appName, stmtTimeout string
-	require.NoError(t, pool.QueryRow(t.Context(), `SELECT current_setting('application_name'), current_setting('statement_timeout')`).Scan(&appName, &stmtTimeout))
+	require.NoError(t, postgres.RawPool(pool).QueryRow(t.Context(), `SELECT current_setting('application_name'), current_setting('statement_timeout')`).Scan(&appName, &stmtTimeout))
 	require.Equal(t, "pkg-test", appName)
 	require.Equal(t, "300ms", stmtTimeout)
 
 	// otelpgx records query spans only under a recording parent span (no orphan DB spans).
 	spanCtx, span := tp.Tracer("test").Start(t.Context(), "parent")
-	_, err = pool.Exec(spanCtx, `SELECT pg_sleep(2)`)
+	_, err = postgres.RawPool(pool).Exec(spanCtx, `SELECT pg_sleep(2)`)
 	span.End()
 	var pgErr *pgconn.PgError
 	require.ErrorAs(t, err, &pgErr)
@@ -258,4 +263,103 @@ func TestReadiness_FlipsOnPostgresLoss_Integration(t *testing.T) {
 
 	cancel()
 	require.NoError(t, <-done)
+}
+
+// TestWithSystemTx_IgnoresSessionLevelTenant_Integration reproduces the data-review H2 leak: code that
+// bypasses the tenant-safe API leaves a session-level app.org_id on a pooled connection. System
+// transactions must still see no tenant rows, and a tenant transaction must see only its own.
+func TestWithSystemTx_IgnoresSessionLevelTenant_Integration(t *testing.T) {
+	db := pgtest.Start(t)
+	migrate(t, db)
+	ctx := t.Context()
+	pool, err := postgres.Open(ctx, postgres.Config{URL: db.AppURL, MaxConns: 1}) // one connection: reuse is certain
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pool.Shutdown(context.WithoutCancel(t.Context()))) })
+
+	require.NoError(t, pool.WithTx(ctx, orgA, func(ctx context.Context, tx pgx.Tx) error { return insert(ctx, tx, orgA, "a") }))
+	require.NoError(t, pool.WithTx(ctx, orgB, func(ctx context.Context, tx pgx.Tx) error { return insert(ctx, tx, orgB, "b") }))
+
+	_, err = postgres.RawPool(pool).Exec(ctx, `SET app.org_id = '`+orgA.String()+`'`)
+	require.NoError(t, err)
+
+	var seen []string
+	require.NoError(t, pool.WithSystemTx(ctx, func(ctx context.Context, tx pgx.Tx) (err error) { seen, err = bodies(ctx, tx); return err }))
+	require.Empty(t, seen, "system transaction inherited a session-level tenant")
+
+	require.NoError(t, pool.WithTx(ctx, orgB, func(ctx context.Context, tx pgx.Tx) (err error) { seen, err = bodies(ctx, tx); return err }))
+	require.Equal(t, []string{"b"}, seen)
+}
+
+// TestRoleDefaults_ServerSideTimeouts_Integration: the role carries its own guards (ADR-0018), so a
+// session that does not send startup parameters (PgBouncer, psql) is still bounded.
+func TestRoleDefaults_ServerSideTimeouts_Integration(t *testing.T) {
+	db := pgtest.Start(t)
+	conn, err := pgx.Connect(t.Context(), db.AppURL)
+	require.NoError(t, err)
+	defer func() { _ = conn.Close(context.WithoutCancel(t.Context())) }()
+	var stmt, lock, idle string
+	require.NoError(t, conn.QueryRow(t.Context(), `SELECT current_setting('statement_timeout'), current_setting('lock_timeout'),
+		current_setting('idle_in_transaction_session_timeout')`).Scan(&stmt, &lock, &idle))
+	require.Equal(t, []string{"30s", "5s", "1min"}, []string{stmt, lock, idle})
+
+	// The app role cannot connect to other databases (PUBLIC CONNECT revoked).
+	other, err := pgx.Connect(t.Context(), db.SuperuserURL)
+	require.NoError(t, err)
+	defer func() { _ = other.Close(context.WithoutCancel(t.Context())) }()
+	var canConnect bool
+	require.NoError(t, other.QueryRow(t.Context(), `SELECT has_database_privilege($1, 'postgres', 'CONNECT')`, pgtest.AppRole).Scan(&canConnect))
+	require.False(t, canConnect)
+}
+
+func TestMigrationConfig_DisablesStatementTimeout_Integration(t *testing.T) {
+	db := pgtest.Start(t)
+	pool, err := postgres.Open(t.Context(), postgres.MigrationConfig(postgres.Config{URL: db.MigratorURL}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pool.Shutdown(context.WithoutCancel(t.Context()))) })
+	var stmt, lock string
+	require.NoError(t, postgres.RawPool(pool).QueryRow(t.Context(), `SELECT current_setting('statement_timeout'), current_setting('lock_timeout')`).Scan(&stmt, &lock))
+	require.Equal(t, "0", stmt)
+	require.Equal(t, "3s", lock)
+}
+
+func TestTenantSchemaRules_Integration(t *testing.T) {
+	db := pgtest.Start(t)
+	migrate(t, db)
+	pgtest.AssertTenantSchema(t, db.MigratorURL, pgtest.AppRole, nil, nil)
+
+	ctx := t.Context()
+	conn, err := pgx.Connect(ctx, db.MigratorURL)
+	require.NoError(t, err)
+	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+	for _, s := range []string{
+		// H1: a view owned by the migrator would bypass RLS.
+		`CREATE VIEW all_notes AS SELECT * FROM notes`,
+		// M7: a tenant-blind unique index reveals other tenants' values through duplicate-key errors.
+		`ALTER TABLE notes ADD COLUMN slug TEXT`,
+		`CREATE UNIQUE INDEX notes_slug_key ON notes (slug)`,
+		`CREATE TABLE unscoped (id int PRIMARY KEY)`,
+		`CREATE FUNCTION peek() RETURNS bigint LANGUAGE sql SECURITY DEFINER AS 'SELECT count(*) FROM notes'`,
+	} {
+		_, execErr := conn.Exec(ctx, s)
+		require.NoError(t, execErr, s)
+	}
+	v, err := pgtest.TenantSchemaViolations(ctx, conn, pgtest.AppRole, nil, nil)
+	require.NoError(t, err)
+	joined := strings.Join(v, "\n")
+	require.Contains(t, joined, `view "all_notes" must be created WITH (security_invoker = true)`)
+	require.Contains(t, joined, `unique index "notes_slug_key"`)
+	require.Contains(t, joined, `table "unscoped" has no organization_id`)
+	require.Contains(t, joined, `SECURITY DEFINER function "peek"`)
+
+	// The compliant forms pass.
+	for _, s := range []string{
+		`DROP VIEW all_notes`, `CREATE VIEW all_notes WITH (security_invoker = true) AS SELECT * FROM notes`,
+		`DROP INDEX notes_slug_key`, `CREATE UNIQUE INDEX notes_org_slug_key ON notes (organization_id, slug)`,
+	} {
+		_, execErr := conn.Exec(ctx, s)
+		require.NoError(t, execErr, s)
+	}
+	v, err = pgtest.TenantSchemaViolations(ctx, conn, pgtest.AppRole, []string{"unscoped"}, []string{"peek"})
+	require.NoError(t, err)
+	require.Empty(t, v)
 }

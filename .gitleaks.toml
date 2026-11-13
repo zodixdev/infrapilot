@@ -1,12 +1,15 @@
-# gitleaks configuration: default rules plus repository-specific allowlist.
+# gitleaks configuration: default rules plus a narrow allowlist.
 title = "InfraPilot"
 
 [extend]
 useDefault = true
 
 [allowlist]
-description = "Non-secret files"
+description = "Lock files and empty template assignments"
 paths = [
-  '''\.env\.example$''',
   '''go\.sum$''',
+]
+# .env.example may only contain empty secret assignments; any real value in it is reported.
+regexes = [
+  '''(?m)^[A-Z0-9_]+=$''',
 ]
