@@ -115,6 +115,26 @@ func (q *Queries) ListProjects(ctx context.Context, arg ListProjectsParams) ([]P
 	return items, nil
 }
 
+const lockLiveProject = `-- name: LockLiveProject :one
+SELECT id FROM projects
+WHERE organization_id = $1 AND id = $2 AND deleted_at IS NULL
+FOR SHARE
+`
+
+type LockLiveProjectParams struct {
+	OrganizationID uuid.UUID
+	ID             uuid.UUID
+}
+
+// Creates inside a project take a share lock so a concurrent soft delete (which takes a row lock) cannot
+// leave a live child under a deleted project.
+func (q *Queries) LockLiveProject(ctx context.Context, arg LockLiveProjectParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, lockLiveProject, arg.OrganizationID, arg.ID)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const softDeleteProject = `-- name: SoftDeleteProject :execrows
 UPDATE projects SET deleted_at = now(), updated_at = now()
 WHERE organization_id = $1 AND id = $2 AND deleted_at IS NULL

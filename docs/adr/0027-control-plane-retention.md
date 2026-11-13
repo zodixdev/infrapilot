@@ -20,7 +20,7 @@ Option 2.
 | `organizations`, `projects`, `resources` | `deleted_at` set on delete; hidden from every read; unique constraints are partial (`WHERE deleted_at IS NULL`); hard-deleted 30 d later (an org purge cascades to its rows) |
 | `memberships` | hard delete (the audit event preserves history) |
 | `api_keys`, `api_key_index` | revoked or expired keys hard-deleted 30 d after revocation/expiry |
-| `audit_events` | append-only for `_app`; deleted after 400 d |
+| `audit_events` | append-only for `_app`; deleted after 400 d; no foreign key to `organizations`, so the history survives the organization's purge |
 | `idempotency_keys` | deleted after 24 h |
 | `users` | kept while referenced by a membership; users without memberships and inactive for 400 d are deleted |
 
@@ -28,7 +28,9 @@ Option 2.
 `application_name=controlplane-purge`, deletes in bounded batches (`ctid IN (SELECT … LIMIT 1000)`), records
 `controlplane_purge_rows_total{table}` and last success time; `ControlPlanePurgeStale` alerts after 3 h without
 success. Deleting an org soft-deletes it only; its projects, resources and keys stop being reachable through the org
-check and are hard-deleted with it.
+check (keys are revoked in the same transaction) and are hard-deleted with it: an expired organization is emptied
+table by table in bounded batches before its row is deleted, so a large tenant never becomes one unbounded
+cascading statement. The user purge skips rows locked by a concurrent membership insert.
 
 ## Consequences
 - Good: bounded growth, recoverable deletions for 30 d (owner restore is a later feature; operators can restore by SQL

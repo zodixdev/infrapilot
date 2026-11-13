@@ -270,6 +270,7 @@ type RevokeAPIKeyParams struct {
 	ID             uuid.UUID
 }
 
+// The api_keys_mirror_revocation trigger updates api_key_index in the same transaction.
 func (q *Queries) RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) (ApiKey, error) {
 	row := q.db.QueryRow(ctx, revokeAPIKey, arg.OrganizationID, arg.ID)
 	var i ApiKey
@@ -288,31 +289,6 @@ func (q *Queries) RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) (Api
 	return i, err
 }
 
-const revokeAPIKeyIndex = `-- name: RevokeAPIKeyIndex :exec
-UPDATE api_key_index SET revoked_at = coalesce(revoked_at, now())
-WHERE organization_id = $1 AND key_id = $2
-`
-
-type RevokeAPIKeyIndexParams struct {
-	OrganizationID uuid.UUID
-	KeyID          uuid.UUID
-}
-
-func (q *Queries) RevokeAPIKeyIndex(ctx context.Context, arg RevokeAPIKeyIndexParams) error {
-	_, err := q.db.Exec(ctx, revokeAPIKeyIndex, arg.OrganizationID, arg.KeyID)
-	return err
-}
-
-const revokeOrganizationAPIKeyIndex = `-- name: RevokeOrganizationAPIKeyIndex :exec
-UPDATE api_key_index SET revoked_at = now()
-WHERE organization_id = $1 AND revoked_at IS NULL
-`
-
-func (q *Queries) RevokeOrganizationAPIKeyIndex(ctx context.Context, organizationID uuid.UUID) error {
-	_, err := q.db.Exec(ctx, revokeOrganizationAPIKeyIndex, organizationID)
-	return err
-}
-
 const revokeOrganizationAPIKeys = `-- name: RevokeOrganizationAPIKeys :exec
 UPDATE api_keys SET revoked_at = now()
 WHERE organization_id = $1 AND revoked_at IS NULL
@@ -320,21 +296,6 @@ WHERE organization_id = $1 AND revoked_at IS NULL
 
 func (q *Queries) RevokeOrganizationAPIKeys(ctx context.Context, organizationID uuid.UUID) error {
 	_, err := q.db.Exec(ctx, revokeOrganizationAPIKeys, organizationID)
-	return err
-}
-
-const revokeProjectAPIKeyIndex = `-- name: RevokeProjectAPIKeyIndex :exec
-UPDATE api_key_index SET revoked_at = now()
-WHERE organization_id = $1 AND project_id = $2 AND revoked_at IS NULL
-`
-
-type RevokeProjectAPIKeyIndexParams struct {
-	OrganizationID uuid.UUID
-	ProjectID      uuid.UUID
-}
-
-func (q *Queries) RevokeProjectAPIKeyIndex(ctx context.Context, arg RevokeProjectAPIKeyIndexParams) error {
-	_, err := q.db.Exec(ctx, revokeProjectAPIKeyIndex, arg.OrganizationID, arg.ProjectID)
 	return err
 }
 

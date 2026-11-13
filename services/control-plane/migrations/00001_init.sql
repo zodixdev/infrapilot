@@ -86,6 +86,8 @@ CREATE UNIQUE INDEX resources_name_key ON resources (organization_id, project_id
 CREATE INDEX resources_list_idx ON resources (organization_id, project_id, id) WHERE deleted_at IS NULL;
 CREATE INDEX resources_kind_idx ON resources (organization_id, project_id, kind, id) WHERE deleted_at IS NULL;
 CREATE INDEX resources_deleted_idx ON resources (deleted_at) WHERE deleted_at IS NOT NULL;
+-- Supports the project foreign key for purges (the partial indexes above cannot serve the cascade lookup).
+CREATE INDEX resources_project_fk_idx ON resources (organization_id, project_id);
 
 CREATE TABLE api_keys (
     id              UUID        PRIMARY KEY,
@@ -99,6 +101,7 @@ CREATE TABLE api_keys (
     expires_at      TIMESTAMPTZ,
     revoked_at      TIMESTAMPTZ,
     UNIQUE (organization_id, id),
+    UNIQUE (organization_id, project_id, id),
     FOREIGN KEY (organization_id, project_id) REFERENCES projects (organization_id, id) ON DELETE CASCADE
 );
 CREATE INDEX api_keys_project_idx ON api_keys (organization_id, project_id, id);
@@ -111,25 +114,40 @@ CREATE TABLE api_key_index (
     key_id          UUID        NOT NULL,
     organization_id UUID        NOT NULL,
     project_id      UUID        NOT NULL,
-    scopes          TEXT[]      NOT NULL,
+    scopes          TEXT[]      NOT NULL CHECK (cardinality(scopes) BETWEEN 1 AND 3 AND scopes <@ ARRAY['read', 'write', 'ingest']),
     expires_at      TIMESTAMPTZ,
     revoked_at      TIMESTAMPTZ,
     UNIQUE (key_id),
-    FOREIGN KEY (organization_id, key_id) REFERENCES api_keys (organization_id, id) ON DELETE CASCADE
+    FOREIGN KEY (organization_id, project_id, key_id) REFERENCES api_keys (organization_id, project_id, id) ON DELETE CASCADE
 );
 
+-- Revocation is written once, to api_keys; the lookup row follows in the same transaction, so the two can
+-- never disagree about whether a key is active. Runs with the invoker's privileges (no SECURITY DEFINER).
+-- +goose StatementBegin
+CREATE FUNCTION api_keys_mirror_revocation() RETURNS trigger LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+  UPDATE api_key_index SET revoked_at = NEW.revoked_at
+  WHERE organization_id = NEW.organization_id AND key_id = NEW.id;
+  RETURN NULL;
+END
+$$;
+-- +goose StatementEnd
+CREATE TRIGGER api_keys_mirror_revocation AFTER UPDATE OF revoked_at ON api_keys
+    FOR EACH ROW WHEN (OLD.revoked_at IS DISTINCT FROM NEW.revoked_at) EXECUTE FUNCTION api_keys_mirror_revocation();
+
 -- Append-only audit log (ADR-0022, ADR-0027): the runtime role can insert and read, never change or delete.
+-- No foreign key to organizations: the history outlives the organization's purge and ages out after 400 days.
 CREATE TABLE audit_events (
     id              UUID        PRIMARY KEY,
-    organization_id UUID        NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    organization_id UUID        NOT NULL,
     actor_kind      TEXT        NOT NULL CHECK (actor_kind IN ('user', 'api_key')),
     actor_id        UUID        NOT NULL,
     action          TEXT        NOT NULL CHECK (action ~ '^[a-z_]+\.[a-z_]+$'),
-    target_type     TEXT        NOT NULL,
-    target_id       TEXT        NOT NULL,
-    details         JSONB       NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(details) = 'object'),
-    request_id      TEXT        NOT NULL DEFAULT '',
-    trace_id        TEXT        NOT NULL DEFAULT '',
+    target_type     TEXT        NOT NULL CHECK (char_length(target_type) BETWEEN 1 AND 64),
+    target_id       TEXT        NOT NULL CHECK (char_length(target_id) BETWEEN 1 AND 255),
+    details         JSONB       NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(details) = 'object' AND pg_column_size(details) <= 8192),
+    request_id      TEXT        NOT NULL DEFAULT '' CHECK (char_length(request_id) <= 128),
+    trace_id        TEXT        NOT NULL DEFAULT '' CHECK (char_length(trace_id) <= 64),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 -- Newest first per organization (ids are UUIDv7, time-ordered).
@@ -141,7 +159,7 @@ CREATE TABLE idempotency_keys (
     organization_id UUID        NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
     principal_id    UUID        NOT NULL,
     key             TEXT        NOT NULL CHECK (char_length(key) BETWEEN 1 AND 128),
-    operation       TEXT        NOT NULL,
+    operation       TEXT        NOT NULL CHECK (char_length(operation) BETWEEN 1 AND 64),
     request_hash    BYTEA       NOT NULL CHECK (octet_length(request_hash) = 32),
     resource_id     UUID        NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -194,20 +212,31 @@ DECLARE
   app   text := regexp_replace(current_user, '_migrator$', '_app');
   batch text := regexp_replace(current_user, '_migrator$', '_batch');
 BEGIN
-  EXECUTE format('GRANT SELECT, INSERT, UPDATE ON users TO %I', app);
-  EXECUTE format('GRANT SELECT, INSERT, UPDATE ON organizations, projects, resources TO %I', app);
-  EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON memberships TO %I', app);
-  EXECUTE format('GRANT SELECT, INSERT, UPDATE ON api_keys, api_key_index TO %I', app);
+  -- Column-level UPDATE grants: the runtime role can change only what the use cases change.
+  EXECUTE format('GRANT SELECT, INSERT ON users TO %I', app);
+  EXECUTE format('GRANT UPDATE (email, display_name, updated_at, last_seen_at) ON users TO %I', app);
+  EXECUTE format('GRANT SELECT, INSERT ON organizations, projects, resources TO %I', app);
+  EXECUTE format('GRANT UPDATE (name, updated_at, deleted_at) ON organizations TO %I', app);
+  EXECUTE format('GRANT UPDATE (name, slug, description, updated_at, deleted_at) ON projects TO %I', app);
+  EXECUTE format('GRANT UPDATE (name, labels, updated_at, deleted_at) ON resources TO %I', app);
+  EXECUTE format('GRANT SELECT, INSERT, DELETE ON memberships TO %I', app);
+  EXECUTE format('GRANT UPDATE (role, updated_at) ON memberships TO %I', app);
+  EXECUTE format('GRANT SELECT, INSERT ON api_keys, api_key_index TO %I', app);
+  EXECUTE format('GRANT UPDATE (revoked_at) ON api_keys, api_key_index TO %I', app);
   EXECUTE format('GRANT SELECT, INSERT ON audit_events, idempotency_keys TO %I', app);
   -- Purge job (ADR-0027): reads to select expired rows, deletes in batches.
   EXECUTE format('GRANT SELECT, DELETE ON users, organizations, projects, resources, api_keys, api_key_index, audit_events, idempotency_keys TO %I', batch);
-  EXECUTE format('GRANT SELECT ON memberships TO %I', batch);
+  EXECUTE format('GRANT SELECT, DELETE ON memberships TO %I', batch);
+  -- Row locks (FOR UPDATE SKIP LOCKED in the user purge) need UPDATE on some column; grant the narrowest one.
+  EXECUTE format('GRANT UPDATE (last_seen_at) ON users TO %I', batch);
 END
 $$;
 -- +goose StatementEnd
 
 -- +goose Down
 DROP TABLE idempotency_keys;
+DROP TRIGGER api_keys_mirror_revocation ON api_keys;
+DROP FUNCTION api_keys_mirror_revocation();
 DROP TABLE audit_events;
 DROP TABLE api_key_index;
 DROP TABLE api_keys;

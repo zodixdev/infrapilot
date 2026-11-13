@@ -4,6 +4,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,6 +50,12 @@ func TestExplain_KeyQueries(t *testing.T) {
 		   SELECT sha256(k.id::text::bytea), k.id, k.organization_id, k.project_id, k.scopes FROM api_keys k`,
 		`INSERT INTO audit_events (id, organization_id, actor_kind, actor_id, action, target_type, target_id)
 		   SELECT gen_random_uuid(), o.id, 'user', gen_random_uuid(), 'member.added', 'member', e::text FROM o, generate_series(1, 50) e`,
+		// One large tenant (org #1): 20,000 members and 300,000 audit events, so plans are also captured where
+		// the planner prefers ordered index scans over sorts.
+		`INSERT INTO users (id, subject, email) SELECT (lpad(to_hex(g), 8, '0') || '-0000-7000-8000-000000000002')::uuid, 'big-' || g, 'b' || g || '@example.com' FROM generate_series(1, 20000) g`,
+		`INSERT INTO memberships (organization_id, user_id, role) SELECT (SELECT id FROM o WHERE n = 1), (lpad(to_hex(g), 8, '0') || '-0000-7000-8000-000000000002')::uuid, 'viewer' FROM generate_series(1, 20000) g`,
+		`INSERT INTO audit_events (id, organization_id, actor_kind, actor_id, action, target_type, target_id)
+		   SELECT gen_random_uuid(), (SELECT id FROM o WHERE n = 1), 'user', gen_random_uuid(), 'member.added', 'member', e::text FROM generate_series(1, 300000) e`,
 		`ANALYZE`,
 	}
 	for _, s := range seed {
@@ -64,24 +71,32 @@ func TestExplain_KeyQueries(t *testing.T) {
 	require.NoError(t, su.QueryRow(ctx, `SELECT user_id FROM memberships WHERE organization_id = $1 LIMIT 1`, org).Scan(&user))
 	require.NoError(t, su.QueryRow(ctx, `SELECT key_id, key_hash FROM api_key_index WHERE organization_id = $1 LIMIT 1`, org).Scan(&key, &keyHash))
 
+	var bigOrg uuid.UUID
+	require.NoError(t, su.QueryRow(ctx, `SELECT id FROM organizations ORDER BY id LIMIT 1`).Scan(&bigOrg))
 	maxUUID := uuid.Max
 	type plan struct {
 		name, sql string
 		args      []any
-		tx        string // "tenant", "user" or "system"
+		tx        string // "tenant", "user", "system" or "batch" (rolled back: EXPLAIN ANALYZE executes DELETEs)
+		org       uuid.UUID
 	}
 	plans := []plan{
-		{"ListOrganizationsForUser", listOrganizationsForUser, []any{user, uuid.Nil, int32(50)}, "user"},
-		{"GetRole", getRole, []any{org, user}, "tenant"},
-		{"ListMembers", listMembers, []any{org, uuid.Nil, int32(50)}, "tenant"},
-		{"ListProjects", listProjects, []any{org, uuid.Nil, int32(50)}, "tenant"},
-		{"ListResources", listResources, []any{org, project, uuid.Nil, int32(50)}, "tenant"},
-		{"ListResourcesByKind", listResourcesByKind, []any{org, project, "host", uuid.Nil, int32(50)}, "tenant"},
-		{"ListAPIKeys", listAPIKeys, []any{org, uuid.Nil, int32(50)}, "tenant"},
-		{"ListProjectAPIKeys", listProjectAPIKeys, []any{org, project, uuid.Nil, int32(50)}, "tenant"},
-		{"ListAuditEvents", listAuditEvents, []any{org, maxUUID, int32(50)}, "tenant"},
-		{"LookupAPIKey", lookupAPIKey, []any{keyHash}, "system"},
-		{"GetActiveAPIKeyScopes", getActiveAPIKeyScopes, []any{org, key}, "tenant"},
+		{"ListOrganizationsForUser", listOrganizationsForUser, []any{user, uuid.Nil, int32(50)}, "user", uuid.Nil},
+		{"GetRole", getRole, []any{org, user}, "tenant", uuid.Nil},
+		{"ListMembers", listMembers, []any{org, uuid.Nil, int32(50)}, "tenant", uuid.Nil},
+		{"ListProjects", listProjects, []any{org, uuid.Nil, int32(50)}, "tenant", uuid.Nil},
+		{"ListResources", listResources, []any{org, project, uuid.Nil, int32(50)}, "tenant", uuid.Nil},
+		{"ListResourcesByKind", listResourcesByKind, []any{org, project, "host", uuid.Nil, int32(50)}, "tenant", uuid.Nil},
+		{"ListAPIKeys", listAPIKeys, []any{org, uuid.Nil, int32(50)}, "tenant", uuid.Nil},
+		{"ListProjectAPIKeys", listProjectAPIKeys, []any{org, project, uuid.Nil, int32(50)}, "tenant", uuid.Nil},
+		{"ListAuditEvents", listAuditEvents, []any{org, maxUUID, int32(50)}, "tenant", uuid.Nil},
+		{"LookupAPIKey", lookupAPIKey, []any{keyHash}, "system", uuid.Nil},
+		{"GetActiveAPIKeyScopes", getActiveAPIKeyScopes, []any{org, key}, "tenant", uuid.Nil},
+		{"ListMembers_LargeTenant", listMembers, []any{bigOrg, uuid.Nil, int32(51)}, "tenant", bigOrg},
+		{"ListAuditEvents_LargeTenant", listAuditEvents, []any{bigOrg, maxUUID, int32(51)}, "tenant", bigOrg},
+		{"PurgeOrganizationResources", purgeOrganizationResources, []any{org, int32(1000)}, "batch", uuid.Nil},
+		{"PurgeOrganizationProjects", purgeOrganizationProjects, []any{org, int32(1000)}, "batch", uuid.Nil},
+		{"PurgeOrganizationAPIKeys", purgeOrganizationAPIKeys, []any{org, int32(1000)}, "batch", uuid.Nil},
 	}
 	outDir := os.Getenv("EXPLAIN_EVIDENCE_DIR")
 	for _, p := range plans {
@@ -95,9 +110,22 @@ func TestExplain_KeyQueries(t *testing.T) {
 				lines, err = pgx.CollectRows(rows, pgx.RowTo[string])
 				return err
 			}
+			tenantOrg := org
+			if p.org != uuid.Nil {
+				tenantOrg = p.org
+			}
 			switch p.tx {
 			case "tenant":
-				require.NoError(t, d.App.WithTx(ctx, org, run))
+				require.NoError(t, d.App.WithTx(ctx, tenantOrg, run))
+			case "batch":
+				rollback := errors.New("rollback")
+				err := d.Batch.WithSystemTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+					if err := run(ctx, tx); err != nil {
+						return err
+					}
+					return rollback
+				})
+				require.ErrorIs(t, err, rollback)
 			case "user":
 				require.NoError(t, d.App.WithUserTx(ctx, user, run))
 			default:

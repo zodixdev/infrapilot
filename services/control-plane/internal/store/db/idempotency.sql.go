@@ -14,6 +14,7 @@ import (
 const getIdempotencyKey = `-- name: GetIdempotencyKey :one
 SELECT organization_id, principal_id, key, operation, request_hash, resource_id, created_at FROM idempotency_keys
 WHERE organization_id = $1 AND principal_id = $2 AND key = $3
+  AND created_at > now() - interval '24 hours'
 `
 
 type GetIdempotencyKeyParams struct {
@@ -22,6 +23,7 @@ type GetIdempotencyKeyParams struct {
 	Key            string
 }
 
+// Keys are honored for 24 hours (ADR-0024), independent of when the hourly purge runs.
 func (q *Queries) GetIdempotencyKey(ctx context.Context, arg GetIdempotencyKeyParams) (IdempotencyKey, error) {
 	row := q.db.QueryRow(ctx, getIdempotencyKey, arg.OrganizationID, arg.PrincipalID, arg.Key)
 	var i IdempotencyKey

@@ -23,28 +23,17 @@ ORDER BY id
 LIMIT @lim;
 
 -- name: RevokeAPIKey :one
+-- The api_keys_mirror_revocation trigger updates api_key_index in the same transaction.
 UPDATE api_keys SET revoked_at = coalesce(revoked_at, now())
 WHERE organization_id = @organization_id AND id = @id
 RETURNING *;
-
--- name: RevokeAPIKeyIndex :exec
-UPDATE api_key_index SET revoked_at = coalesce(revoked_at, now())
-WHERE organization_id = @organization_id AND key_id = @key_id;
 
 -- name: RevokeProjectAPIKeys :exec
 UPDATE api_keys SET revoked_at = now()
 WHERE organization_id = @organization_id AND project_id = @project_id AND revoked_at IS NULL;
 
--- name: RevokeProjectAPIKeyIndex :exec
-UPDATE api_key_index SET revoked_at = now()
-WHERE organization_id = @organization_id AND project_id = @project_id AND revoked_at IS NULL;
-
 -- name: RevokeOrganizationAPIKeys :exec
 UPDATE api_keys SET revoked_at = now()
-WHERE organization_id = @organization_id AND revoked_at IS NULL;
-
--- name: RevokeOrganizationAPIKeyIndex :exec
-UPDATE api_key_index SET revoked_at = now()
 WHERE organization_id = @organization_id AND revoked_at IS NULL;
 
 -- name: LookupAPIKey :one

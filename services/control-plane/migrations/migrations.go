@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/pressly/goose/v3"
 	"github.com/pressly/goose/v3/lock"
@@ -19,10 +22,33 @@ import (
 //go:embed *.sql
 var FS embed.FS
 
+// lockRetries bounds how often a migration that hit lock_timeout (SQLSTATE 55P03) is retried (ADR-0018): the
+// short lock timeout keeps DDL from queueing behind traffic, and the retry gives it another chance.
+const lockRetries = 5
+
 // Migrate applies every pending migration as the migrator role (MigrationConfig: one connection, no statement
 // timeout, 3 s lock timeout). goose serializes concurrent runners with a Postgres session advisory lock, so
-// parallel Helm hook jobs are safe; a lock timeout fails the run and the Job's retry applies it again.
+// parallel Helm hook jobs are safe. Each migration commits on its own, so a retry resumes after the last
+// applied one.
 func Migrate(ctx context.Context, url string, logger *slog.Logger) error {
+	backoff := time.Second
+	for attempt := 1; ; attempt++ {
+		err := migrateOnce(ctx, url, logger)
+		var pgErr *pgconn.PgError
+		if err == nil || !errors.As(err, &pgErr) || pgErr.Code != "55P03" || attempt == lockRetries {
+			return err
+		}
+		logger.WarnContext(ctx, "migration hit lock_timeout; retrying", slog.Int("attempt", attempt), slog.Duration("backoff", backoff))
+		select {
+		case <-ctx.Done():
+			return errors.Join(err, ctx.Err())
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+	}
+}
+
+func migrateOnce(ctx context.Context, url string, logger *slog.Logger) error {
 	db, err := postgres.OpenSQL(postgres.MigrationConfig(postgres.Config{URL: url, ApplicationName: "control-plane-migrate"}))
 	if err != nil {
 		return fmt.Errorf("migrations: migrate: %w", err)

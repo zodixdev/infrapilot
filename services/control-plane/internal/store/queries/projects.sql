@@ -24,3 +24,10 @@ RETURNING *;
 -- name: SoftDeleteProject :execrows
 UPDATE projects SET deleted_at = now(), updated_at = now()
 WHERE organization_id = @organization_id AND id = @id AND deleted_at IS NULL;
+
+-- name: LockLiveProject :one
+-- Creates inside a project take a share lock so a concurrent soft delete (which takes a row lock) cannot
+-- leave a live child under a deleted project.
+SELECT id FROM projects
+WHERE organization_id = @organization_id AND id = @id AND deleted_at IS NULL
+FOR SHARE;

@@ -117,15 +117,17 @@ func TestRLS_CrossTenant_Integration(t *testing.T) {
 				return nil
 			}))
 
-			// Updates and deletes of another tenant's rows match nothing (DELETE where granted).
+			// Updates of another tenant's rows match nothing (on a column the runtime role may update).
 			require.NoError(t, d.App.WithTx(ctx, a.org, func(ctx context.Context, tx pgx.Tx) error {
-				if table == "audit_events" || table == "idempotency_keys" {
-					return nil // no UPDATE/DELETE grant at all; covered by TestAudit_AppendOnly
-				}
-				stmt := fmt.Sprintf(`UPDATE %s SET organization_id = organization_id WHERE organization_id = $1`, pgx.Identifier{table}.Sanitize())
-				if table == "organizations" {
-					// organization_id is generated; touch another column instead.
-					stmt = `UPDATE organizations SET name = name WHERE id = $1`
+				stmt, ok := map[string]string{
+					"organizations": `UPDATE organizations SET name = name WHERE id = $1`,
+					"memberships":   `UPDATE memberships SET role = role WHERE organization_id = $1`,
+					"projects":      `UPDATE projects SET name = name WHERE organization_id = $1`,
+					"resources":     `UPDATE resources SET name = name WHERE organization_id = $1`,
+					"api_keys":      `UPDATE api_keys SET revoked_at = revoked_at WHERE organization_id = $1`,
+				}[table]
+				if !ok {
+					return nil // append-only tables have no UPDATE grant; covered by TestAudit_AppendOnly
 				}
 				tag, err := tx.Exec(ctx, stmt, b.org)
 				require.NoError(t, err)
@@ -187,6 +189,38 @@ func TestRLS_CrossTenant_Integration(t *testing.T) {
 			return nil
 		}))
 	})
+}
+
+func TestAPIKeyRevocation_MirroredToLookup_Integration(t *testing.T) {
+	d := testdb.Start(t)
+	a := seedTenant(t, d, "alpha")
+	ctx := t.Context()
+	require.NoError(t, d.App.WithTx(ctx, a.org, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := db.New(tx).RevokeAPIKey(ctx, db.RevokeAPIKeyParams{OrganizationID: a.org, ID: a.key})
+		return err
+	}))
+	require.NoError(t, d.App.WithSystemTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := db.New(tx).LookupAPIKey(ctx, a.keyHash)
+		require.ErrorIs(t, err, pgx.ErrNoRows, "a revoked key no longer authenticates")
+		return nil
+	}))
+}
+
+func TestColumnGrants_Integration(t *testing.T) {
+	d := testdb.Start(t)
+	a := seedTenant(t, d, "alpha")
+	for _, stmt := range []string{
+		`UPDATE api_keys SET scopes = ARRAY['write']`,
+		`UPDATE api_key_index SET organization_id = gen_random_uuid()`,
+		`UPDATE users SET subject = 'stolen'`,
+		`UPDATE memberships SET user_id = gen_random_uuid()`,
+	} {
+		err := d.App.WithTx(t.Context(), a.org, func(ctx context.Context, tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, stmt)
+			return err
+		})
+		requireSQLState(t, err, "42501")
+	}
 }
 
 func TestAudit_AppendOnly_Integration(t *testing.T) {

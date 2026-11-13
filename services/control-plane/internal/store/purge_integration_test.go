@@ -66,11 +66,14 @@ func TestPurge_Retention_Integration(t *testing.T) {
 	deleted, err := store.Purge(ctx, d.Batch, func(table string, n int64) { reported[table] += n })
 	require.NoError(t, err)
 	require.Equal(t, deleted, reported)
+	// alpha's expired rows plus everything beta owned.
 	require.EqualValues(t, 1, deleted["organizations"])
-	require.EqualValues(t, 1, deleted["resources"])
-	require.EqualValues(t, 1, deleted["api_keys"])
+	require.EqualValues(t, 2, deleted["resources"])
+	require.EqualValues(t, 2, deleted["api_keys"])
+	require.EqualValues(t, 1, deleted["projects"])
+	require.EqualValues(t, 1, deleted["memberships"])
 	require.EqualValues(t, 1, deleted["audit_events"])
-	require.EqualValues(t, 1, deleted["idempotency_keys"])
+	require.EqualValues(t, 2, deleted["idempotency_keys"])
 	require.EqualValues(t, 1, deleted["users"])
 
 	exists := func(table string, where string, args ...any) bool {
@@ -79,8 +82,13 @@ func TestPurge_Retention_Integration(t *testing.T) {
 		return ok
 	}
 	for _, table := range tenantTables {
-		require.False(t, exists(table, "WHERE organization_id = $1", b.org), "purged org's %s must cascade away", table)
+		if table == "audit_events" {
+			continue
+		}
+		require.False(t, exists(table, "WHERE organization_id = $1", b.org), "purged org's %s must be gone", table)
 	}
+	require.True(t, exists("audit_events", "WHERE organization_id = $1", b.org), "audit history outlives the organization (ADR-0027)")
+	require.False(t, exists("api_key_index", "WHERE organization_id = $1", b.org))
 	require.False(t, exists("api_key_index", "WHERE key_id = $1", a.key), "lookup row follows its key")
 	require.True(t, exists("resources", "WHERE id = $1", fresh), "rows inside the grace period stay")
 	require.True(t, exists("users", "WHERE id = $1", recent))

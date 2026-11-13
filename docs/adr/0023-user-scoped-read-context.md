@@ -30,7 +30,8 @@ Option 3. The lookup table of ADR-0018's example becomes unnecessary: membership
 
 ## Consequences
 - Good: one query per page; no denormalized payload; fail-closed semantics preserved.
-- Bad / trade-offs we accept: the `OR` of two permissive policies is part of every query on those two tables; org-scoped
+- Bad / trade-offs we accept: with the `OR` in the policy, "my organizations" sorts the user's memberships before
+  applying the page limit — fine for the handful of organizations a user belongs to, revisit if that grows; the `OR` of two permissive policies is part of every query on those two tables; org-scoped
   queries keep their explicit `organization_id = $1` predicate so the index is used (verified by EXPLAIN); one extra
   `set_config` per transaction.
 - Verification: `pkg/postgres` tests (user context unset → no rows; cannot write; cleared by `WithTx`), control-plane

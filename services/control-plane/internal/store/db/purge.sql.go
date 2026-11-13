@@ -7,7 +7,48 @@ package db
 
 import (
 	"context"
+
+	"github.com/google/uuid"
 )
+
+const deleteOrganization = `-- name: DeleteOrganization :execrows
+DELETE FROM organizations WHERE id = $1 AND deleted_at < now() - interval '30 days'
+`
+
+func (q *Queries) DeleteOrganization(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteOrganization, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const listExpiredOrganizations = `-- name: ListExpiredOrganizations :many
+
+SELECT id FROM organizations WHERE deleted_at < now() - interval '30 days' ORDER BY deleted_at LIMIT $1
+`
+
+// Retention (ADR-0027). Runs as <svc>_batch (BYPASSRLS) through WithSystemTx, in bounded batches so each
+// statement holds locks briefly. Each query returns the number of rows deleted.
+func (q *Queries) ListExpiredOrganizations(ctx context.Context, lim int32) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listExpiredOrganizations, lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
 
 const purgeAPIKeys = `-- name: PurgeAPIKeys :execrows
 DELETE FROM api_keys WHERE id IN (
@@ -30,6 +71,7 @@ DELETE FROM audit_events WHERE id IN (
     SELECT id FROM audit_events WHERE created_at < now() - interval '400 days' ORDER BY created_at LIMIT $1)
 `
 
+// Audit events outlive their organization (no foreign key) and age out after 400 days only.
 func (q *Queries) PurgeAuditEvents(ctx context.Context, lim int32) (int64, error) {
 	result, err := q.db.Exec(ctx, purgeAuditEvents, lim)
 	if err != nil {
@@ -52,16 +94,90 @@ func (q *Queries) PurgeIdempotencyKeys(ctx context.Context, lim int32) (int64, e
 	return result.RowsAffected(), nil
 }
 
-const purgeOrganizations = `-- name: PurgeOrganizations :execrows
-
-DELETE FROM organizations WHERE id IN (
-    SELECT id FROM organizations WHERE deleted_at < now() - interval '30 days' ORDER BY deleted_at LIMIT $1)
+const purgeOrganizationAPIKeys = `-- name: PurgeOrganizationAPIKeys :execrows
+DELETE FROM api_keys WHERE id IN (SELECT k.id FROM api_keys k WHERE k.organization_id = $1 LIMIT $2)
 `
 
-// Retention (ADR-0027). Runs as <svc>_batch (BYPASSRLS) through WithSystemTx, in bounded batches so each
-// statement holds locks briefly. Each query returns the number of rows deleted.
-func (q *Queries) PurgeOrganizations(ctx context.Context, lim int32) (int64, error) {
-	result, err := q.db.Exec(ctx, purgeOrganizations, lim)
+type PurgeOrganizationAPIKeysParams struct {
+	Org uuid.UUID
+	Lim int32
+}
+
+func (q *Queries) PurgeOrganizationAPIKeys(ctx context.Context, arg PurgeOrganizationAPIKeysParams) (int64, error) {
+	result, err := q.db.Exec(ctx, purgeOrganizationAPIKeys, arg.Org, arg.Lim)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const purgeOrganizationIdempotencyKeys = `-- name: PurgeOrganizationIdempotencyKeys :execrows
+DELETE FROM idempotency_keys WHERE (organization_id, principal_id, key) IN (
+    SELECT i.organization_id, i.principal_id, i.key FROM idempotency_keys i WHERE i.organization_id = $1 LIMIT $2)
+`
+
+type PurgeOrganizationIdempotencyKeysParams struct {
+	Org uuid.UUID
+	Lim int32
+}
+
+func (q *Queries) PurgeOrganizationIdempotencyKeys(ctx context.Context, arg PurgeOrganizationIdempotencyKeysParams) (int64, error) {
+	result, err := q.db.Exec(ctx, purgeOrganizationIdempotencyKeys, arg.Org, arg.Lim)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const purgeOrganizationMemberships = `-- name: PurgeOrganizationMemberships :execrows
+DELETE FROM memberships WHERE (organization_id, user_id) IN (
+    SELECT m.organization_id, m.user_id FROM memberships m WHERE m.organization_id = $1 LIMIT $2)
+`
+
+type PurgeOrganizationMembershipsParams struct {
+	Org uuid.UUID
+	Lim int32
+}
+
+func (q *Queries) PurgeOrganizationMemberships(ctx context.Context, arg PurgeOrganizationMembershipsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, purgeOrganizationMemberships, arg.Org, arg.Lim)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const purgeOrganizationProjects = `-- name: PurgeOrganizationProjects :execrows
+DELETE FROM projects WHERE id IN (SELECT p.id FROM projects p WHERE p.organization_id = $1 LIMIT $2)
+`
+
+type PurgeOrganizationProjectsParams struct {
+	Org uuid.UUID
+	Lim int32
+}
+
+func (q *Queries) PurgeOrganizationProjects(ctx context.Context, arg PurgeOrganizationProjectsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, purgeOrganizationProjects, arg.Org, arg.Lim)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const purgeOrganizationResources = `-- name: PurgeOrganizationResources :execrows
+
+DELETE FROM resources WHERE id IN (SELECT r.id FROM resources r WHERE r.organization_id = $1 LIMIT $2)
+`
+
+type PurgeOrganizationResourcesParams struct {
+	Org uuid.UUID
+	Lim int32
+}
+
+// An expired organization is emptied table by table in bounded batches, then deleted, so one large tenant
+// never becomes one unbounded cascading statement.
+func (q *Queries) PurgeOrganizationResources(ctx context.Context, arg PurgeOrganizationResourcesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, purgeOrganizationResources, arg.Org, arg.Lim)
 	if err != nil {
 		return 0, err
 	}
@@ -99,9 +215,11 @@ DELETE FROM users WHERE id IN (
     SELECT u.id FROM users u
     WHERE u.last_seen_at < now() - interval '400 days'
       AND NOT EXISTS (SELECT 1 FROM memberships m WHERE m.user_id = u.id)
-    ORDER BY u.last_seen_at LIMIT $1)
+    ORDER BY u.last_seen_at LIMIT $1
+    FOR UPDATE SKIP LOCKED)
 `
 
+// SKIP LOCKED: a user being added to an organization right now holds a key-share lock and is skipped.
 func (q *Queries) PurgeUsers(ctx context.Context, lim int32) (int64, error) {
 	result, err := q.db.Exec(ctx, purgeUsers, lim)
 	if err != nil {
