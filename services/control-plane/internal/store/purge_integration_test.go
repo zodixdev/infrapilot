@@ -59,6 +59,11 @@ func TestPurge_Retention_Integration(t *testing.T) {
 		require.NoError(t, execErr, s.sql)
 	}
 
+	// An organization-create idempotency record past its 24 h window.
+	_, err = su.Exec(ctx, `INSERT INTO org_create_keys (principal_id, key, organization_id, request_hash, created_at)
+		VALUES ($1, 'k', $2, decode(repeat('ab', 32), 'hex'), now() - interval '25 hours')`, a.user, a.org)
+	require.NoError(t, err)
+
 	_, err = store.Purge(ctx, d.App, nil)
 	require.ErrorIs(t, err, store.ErrPurgeNeedsBatchRole, "under RLS the purge would silently delete nothing")
 
@@ -75,6 +80,7 @@ func TestPurge_Retention_Integration(t *testing.T) {
 	require.EqualValues(t, 1, deleted["audit_events"])
 	require.EqualValues(t, 2, deleted["idempotency_keys"])
 	require.EqualValues(t, 1, deleted["users"])
+	require.EqualValues(t, 1, deleted["org_create_keys"])
 
 	exists := func(table string, where string, args ...any) bool {
 		var ok bool

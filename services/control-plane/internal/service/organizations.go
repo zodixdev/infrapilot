@@ -42,8 +42,12 @@ func (s *Service) CreateOrganization(ctx context.Context, a Actor, in CreateOrga
 	err := s.pool.WithTx(ctx, orgID, func(ctx context.Context, tx pgx.Tx) error {
 		q := db.New(tx)
 		if idem != nil {
-			if err := q.LockIdempotencyKey(ctx, idemScope(uuid.Nil, a.ID, idem.key)); err != nil {
+			locked, err := q.TryLockIdempotencyKey(ctx, idemScope(uuid.Nil, a.ID, idem.key))
+			if err != nil {
 				return fmt.Errorf("idempotency lock: %w", err)
+			}
+			if !locked {
+				return domain.Conflictf("a request with this Idempotency-Key is still in progress; retry shortly")
 			}
 			rec, err := q.GetOrgCreateKey(ctx, db.GetOrgCreateKeyParams{PrincipalID: a.ID, Key: idem.key})
 			switch {

@@ -123,13 +123,17 @@ func (q *Queries) InsertOrgCreateKey(ctx context.Context, arg InsertOrgCreateKey
 	return result.RowsAffected(), nil
 }
 
-const lockIdempotencyKey = `-- name: LockIdempotencyKey :exec
-SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
+const tryLockIdempotencyKey = `-- name: TryLockIdempotencyKey :one
+SELECT pg_try_advisory_xact_lock(hashtextextended($1::text, 0))
 `
 
-// Serializes requests with the same (organization, principal, key) for the rest of the transaction, so a
-// concurrent duplicate waits and then replays instead of colliding on the resource's own unique keys.
-func (q *Queries) LockIdempotencyKey(ctx context.Context, scope string) error {
-	_, err := q.db.Exec(ctx, lockIdempotencyKey, scope)
-	return err
+// Claims (organization, principal, key) for the rest of the transaction. A concurrent duplicate does not wait
+// (waiting would pin a pool connection per duplicate): it learns that the original is still in progress and
+// answers 409; once the original commits, retries replay it. The 64-bit key space is shared with other advisory
+// locks (goose); a collision only makes two operations exclude each other briefly.
+func (q *Queries) TryLockIdempotencyKey(ctx context.Context, scope string) (bool, error) {
+	row := q.db.QueryRow(ctx, tryLockIdempotencyKey, scope)
+	var pg_try_advisory_xact_lock bool
+	err := row.Scan(&pg_try_advisory_xact_lock)
+	return pg_try_advisory_xact_lock, err
 }

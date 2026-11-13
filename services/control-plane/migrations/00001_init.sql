@@ -3,7 +3,8 @@
 -- Runs as <svc>_migrator. Grants go to <svc>_app (runtime, RLS enforced) and <svc>_batch (purge job, BYPASSRLS);
 -- the names are derived from the migrator's name so the same file works in compose, tests and production.
 -- Tenant tables: organization_id NOT NULL, RLS, policy on app.org_id, unique indexes and foreign keys include
--- organization_id. Non-tenant tables: users (global identities) and api_key_index (pre-tenant lookup).
+-- organization_id. Non-tenant tables: users (global identities), api_key_index (pre-tenant lookup) and
+-- org_create_keys (idempotency of organization creates, which have no tenant yet).
 
 -- +goose Up
 
@@ -180,6 +181,8 @@ CREATE TABLE org_create_keys (
     PRIMARY KEY (principal_id, key)
 );
 CREATE INDEX org_create_keys_created_idx ON org_create_keys (created_at);
+-- Supports the cascade when an organization is purged.
+CREATE INDEX org_create_keys_org_idx ON org_create_keys (organization_id);
 
 -- Row-level security: tenant policy on every tenant table, plus the read-only user policies of ADR-0023.
 ALTER TABLE organizations    ENABLE ROW LEVEL SECURITY;

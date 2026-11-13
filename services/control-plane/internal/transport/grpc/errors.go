@@ -64,9 +64,9 @@ func toStatus(ctx context.Context, logger *slog.Logger, err error) error {
 	case errors.Is(err, context.Canceled):
 		return status.Error(codes.Canceled, "request canceled")
 	case statementTimeout(err):
-		// Not UNAVAILABLE: clients retry UNAVAILABLE, and retrying statements that time out on a slow database only
-		// adds load (the edge answers 503 either way).
-		logger.WarnContext(ctx, "database statement timeout", slog.Any("error", err))
+		// Statement timeout or an operator's query cancellation. Not UNAVAILABLE: clients retry UNAVAILABLE, and
+		// retrying statements that time out on a slow database only adds load (the edge answers 503 either way).
+		logger.WarnContext(ctx, "database query cancelled or timed out", slog.Any("error", err))
 		return status.Error(codes.DeadlineExceeded, "request took too long, retry later")
 	case unavailable(err):
 		logger.WarnContext(ctx, "database unavailable", slog.Any("error", err))

@@ -279,8 +279,9 @@ func newIdempotency(ctx context.Context, op string, input any) (*idempotency, er
 
 // createIdempotent runs create inside WithTx(org). With a live idempotency record it returns replay(resourceID)
 // instead (or ErrIdempotencyKeyReused on a different request). A transaction-scoped advisory lock on
-// (org, principal, key) is taken before the lookup, so a concurrent duplicate waits for the first request to
-// commit and then replays — it never races the first one on the resource's own unique keys (ADR-0024).
+// (org, principal, key) is claimed before the lookup: a concurrent duplicate gets a conflict ("in progress")
+// right away instead of racing the first one on the resource's own unique keys or holding a pooled connection
+// while it waits; retried after the first commits, it replays (ADR-0024).
 func createIdempotent[T any](ctx context.Context, s *Service, org uuid.UUID, a Actor, idem *idempotency,
 	create func(ctx context.Context, q *db.Queries) (T, uuid.UUID, error),
 	replay func(ctx context.Context, q *db.Queries, id uuid.UUID) (T, error),
@@ -289,8 +290,12 @@ func createIdempotent[T any](ctx context.Context, s *Service, org uuid.UUID, a A
 	err := s.pool.WithTx(ctx, org, func(ctx context.Context, tx pgx.Tx) error {
 		q := db.New(tx)
 		if idem != nil {
-			if err := q.LockIdempotencyKey(ctx, idemScope(org, a.ID, idem.key)); err != nil {
+			locked, err := q.TryLockIdempotencyKey(ctx, idemScope(org, a.ID, idem.key))
+			if err != nil {
 				return fmt.Errorf("idempotency lock: %w", err)
+			}
+			if !locked {
+				return domain.Conflictf("a request with this Idempotency-Key is still in progress; retry shortly")
 			}
 			rec, err := q.GetIdempotencyKey(ctx, db.GetIdempotencyKeyParams{OrganizationID: org, PrincipalID: a.ID, Key: idem.key})
 			switch {
@@ -315,7 +320,7 @@ func createIdempotent[T any](ctx context.Context, s *Service, org uuid.UUID, a A
 			if err != nil {
 				return fmt.Errorf("idempotency record: %w", err)
 			}
-			if n == 0 { // impossible under the advisory lock; refuse rather than create a second resource silently
+			if n == 0 { // impossible while holding the advisory lock; refuse rather than create a second resource
 				return domain.Conflictf("a concurrent request with this Idempotency-Key is in progress")
 			}
 		}

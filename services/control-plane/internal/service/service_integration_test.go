@@ -95,10 +95,22 @@ func TestIdempotency_Integration(t *testing.T) {
 			})
 		}
 		wg.Wait()
+		// Each duplicate either replays the single project or is told the original is still in progress.
+		created := uuid.Nil
 		for i := range n {
-			require.NoError(t, errs[i])
-			require.Equal(t, ids[0], ids[i])
+			if errs[i] != nil {
+				require.ErrorIs(t, errs[i], domain.ErrConflict)
+				continue
+			}
+			if created == uuid.Nil {
+				created = ids[i]
+			}
+			require.Equal(t, created, ids[i])
 		}
+		require.NotEqual(t, uuid.Nil, created)
+		again, err := e.svc.CreateProject(withKey(ctx, "k-race"), alice, org, service.CreateProjectInput{Name: "Race", Slug: "race"})
+		require.NoError(t, err, "after the original committed, a retry replays it")
+		require.Equal(t, created, again.ID)
 	})
 
 	t.Run("organization creation is idempotent per user and key", func(t *testing.T) {

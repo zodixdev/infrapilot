@@ -21,7 +21,7 @@ Option 2.
 | `memberships` | hard delete (the audit event preserves history) |
 | `api_keys`, `api_key_index` | revoked or expired keys hard-deleted 30 d after revocation/expiry |
 | `audit_events` | append-only for `_app`; deleted after 400 d; no foreign key to `organizations`, so the history survives the organization's purge |
-| `idempotency_keys` | deleted after 24 h |
+| `idempotency_keys`, `org_create_keys` | deleted after 24 h (`org_create_keys` also cascades with its organization's purge) |
 | `users` | kept while referenced by a membership; users without memberships and inactive for 400 d are deleted |
 
 `control-plane purge` runs as a Kubernetes CronJob (hourly) with the `controlplane_batch` role and

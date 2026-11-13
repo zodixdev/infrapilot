@@ -4,10 +4,12 @@ SELECT * FROM idempotency_keys
 WHERE organization_id = @organization_id AND principal_id = @principal_id AND key = @key
   AND created_at > now() - interval '24 hours';
 
--- name: LockIdempotencyKey :exec
--- Serializes requests with the same (organization, principal, key) for the rest of the transaction, so a
--- concurrent duplicate waits and then replays instead of colliding on the resource's own unique keys.
-SELECT pg_advisory_xact_lock(hashtextextended(@scope::text, 0));
+-- name: TryLockIdempotencyKey :one
+-- Claims (organization, principal, key) for the rest of the transaction. A concurrent duplicate does not wait
+-- (waiting would pin a pool connection per duplicate): it learns that the original is still in progress and
+-- answers 409; once the original commits, retries replay it. The 64-bit key space is shared with other advisory
+-- locks (goose); a collision only makes two operations exclude each other briefly.
+SELECT pg_try_advisory_xact_lock(hashtextextended(@scope::text, 0));
 
 -- name: InsertIdempotencyKey :execrows
 -- Replaces an expired record (older than the 24 h window but not yet purged); 0 rows means a live record exists.

@@ -108,7 +108,8 @@ SELECT id FROM organizations WHERE id = $1 AND organization_id = $1 AND deleted_
 `
 
 // Writes that must not outlive the organization's deletion (API keys) share-lock its row; the delete's row lock
-// waits for them, and their later revocation step then sees them.
+// waits for them, and their later revocation step then sees them. A concurrent rename waits for the (short)
+// key-creating transaction as well.
 func (q *Queries) LockLiveOrganization(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
 	row := q.db.QueryRow(ctx, lockLiveOrganization, id)
 	var id_2 uuid.UUID

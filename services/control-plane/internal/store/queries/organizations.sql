@@ -21,7 +21,8 @@ RETURNING *;
 
 -- name: LockLiveOrganization :one
 -- Writes that must not outlive the organization's deletion (API keys) share-lock its row; the delete's row lock
--- waits for them, and their later revocation step then sees them.
+-- waits for them, and their later revocation step then sees them. A concurrent rename waits for the (short)
+-- key-creating transaction as well.
 SELECT id FROM organizations WHERE id = @id AND organization_id = @id AND deleted_at IS NULL FOR SHARE;
 
 -- name: SoftDeleteOrganization :execrows
