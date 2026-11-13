@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -65,8 +66,32 @@ func startKeycloak(t *testing.T) *keycloak {
 	ep, err := c.PortEndpoint(ctx, "8080/tcp", "http")
 	require.NoError(t, err)
 	k.c, k.base = c, strings.Replace(ep, "localhost", "127.0.0.1", 1)
+	k.requireClockInSync(t)
 	k.setupTestClient(t)
 	return k
+}
+
+// requireClockInSync fails fast when the container runtime's clock (Keycloak signs iat/exp with it) is far off the
+// host's (the gateway validates with it): Docker Desktop's VM clock can jump after the host sleeps, and the tokens
+// would then be rejected as issued in the future or expired — a bare 401 far from the cause.
+func (k *keycloak) requireClockInSync(t *testing.T) {
+	t.Helper()
+	before := time.Now()
+	tok := k.adminToken(t)
+	after := time.Now()
+	parts := strings.Split(tok, ".")
+	require.Len(t, parts, 3)
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	require.NoError(t, err)
+	var claims struct {
+		IssuedAt int64 `json:"iat"`
+	}
+	require.NoError(t, json.Unmarshal(payload, &claims))
+	// iat has one-second resolution: anything within the round trip plus a few seconds is in sync.
+	issued := time.Unix(claims.IssuedAt, 0)
+	if skew := issued.Sub(before.Add(after.Sub(before) / 2)); skew > 10*time.Second || skew < -10*time.Second {
+		t.Fatalf("container clock is %s off the host clock (token leeway is 30 s); resync the Docker VM clock and rerun", skew.Round(time.Second))
+	}
 }
 
 func (k *keycloak) issuer() string  { return k.base + "/realms/infrapilot" }
