@@ -1,12 +1,20 @@
-{{- /* Test-only Postgres with the ADR-0018 role split; password is generated once and reused on upgrades. */ -}}
+{{- /*
+Test-only Postgres for the conformance release, provisioned with the ADR-0018 role split.
+It is created once (pre-install hook, kept afterwards) so that upgrades exercise migrations against
+existing data instead of recreating the database. `make undeploy` deletes the namespace and with it these
+objects. Passwords are generated once per role and reused on later renders via lookup.
+*/ -}}
 {{- $secretName := "conformance-postgres" -}}
 {{- $existing := lookup "v1" "Secret" .Release.Namespace $secretName -}}
-{{- $password := "" -}}
-{{- if $existing -}}
-{{- $password = index $existing.data "password" | b64dec -}}
+{{- $pw := dict -}}
+{{- range $k := list "superuser" "migrator" "app" -}}
+{{- if and $existing (hasKey $existing.data (printf "%s-password" $k)) -}}
+{{- $_ := set $pw $k (index $existing.data (printf "%s-password" $k) | b64dec) -}}
 {{- else -}}
-{{- $password = randAlphaNum 24 -}}
+{{- $_ := set $pw $k (randAlphaNum 32) -}}
 {{- end -}}
+{{- end -}}
+{{- $hook := dict "helm.sh/hook" "pre-install" "helm.sh/resource-policy" "keep" -}}
 ---
 apiVersion: v1
 kind: Secret
@@ -18,14 +26,15 @@ metadata:
     app.kubernetes.io/instance: {{ .Release.Name }}
     app.kubernetes.io/part-of: infrapilot
   annotations:
-    helm.sh/hook: pre-install,pre-upgrade
-    helm.sh/hook-weight: "-20"
-    helm.sh/resource-policy: keep
+    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook-weight: "-30"
 type: Opaque
 stringData:
-  password: {{ $password | quote }}
-  migrator-url: {{ printf "postgres://conformance_migrator:%s@conformance-postgres:5432/conformance?sslmode=disable" $password | quote }}
-  app-url: {{ printf "postgres://conformance_app:%s@conformance-postgres:5432/conformance?sslmode=disable" $password | quote }}
+  superuser-password: {{ $pw.superuser | quote }}
+  migrator-password: {{ $pw.migrator | quote }}
+  app-password: {{ $pw.app | quote }}
+  migrator-url: {{ printf "postgres://conformance_migrator:%s@conformance-postgres:5432/conformance?sslmode=disable" $pw.migrator | quote }}
+  app-url: {{ printf "postgres://conformance_app:%s@conformance-postgres:5432/conformance?sslmode=disable" $pw.app | quote }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -36,21 +45,30 @@ metadata:
     app.kubernetes.io/name: conformance-postgres
     app.kubernetes.io/instance: {{ .Release.Name }}
   annotations:
-    helm.sh/hook: pre-install,pre-upgrade
-    helm.sh/hook-weight: "-20"
-    helm.sh/resource-policy: keep
+    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook-weight: "-30"
 data:
   01-roles.sh: |
     #!/bin/sh
+    # Values are psql variables, never spliced into SQL; failing statements are not logged.
     set -eu
-    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<SQL
-    CREATE ROLE conformance_migrator LOGIN PASSWORD '$ROLE_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
-    CREATE ROLE conformance_app      LOGIN PASSWORD '$ROLE_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+    psql -v ON_ERROR_STOP=1 -X -q --username "$POSTGRES_USER" --dbname postgres \
+      -v mpw="$MIGRATOR_PASSWORD" -v apw="$APP_PASSWORD" <<'SQL'
+    SET log_min_error_statement = panic;
+    CREATE ROLE conformance_migrator LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD :'mpw';
+    CREATE ROLE conformance_app      LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD :'apw';
+    ALTER ROLE conformance_app SET statement_timeout = '30s';
+    ALTER ROLE conformance_app SET lock_timeout = '5s';
+    ALTER ROLE conformance_app SET idle_in_transaction_session_timeout = '60s';
+    ALTER ROLE conformance_migrator SET lock_timeout = '3s';
     CREATE DATABASE conformance OWNER conformance_migrator;
+    REVOKE ALL ON DATABASE conformance FROM PUBLIC;
+    GRANT CONNECT ON DATABASE conformance TO conformance_migrator, conformance_app;
+    REVOKE CONNECT ON DATABASE postgres FROM PUBLIC;
     SQL
-    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname conformance <<SQL
+    psql -v ON_ERROR_STOP=1 -X -q --username "$POSTGRES_USER" --dbname conformance <<'SQL'
     REVOKE ALL ON SCHEMA public FROM PUBLIC;
-    GRANT ALL ON SCHEMA public TO conformance_migrator;
+    ALTER SCHEMA public OWNER TO conformance_migrator;
     GRANT USAGE ON SCHEMA public TO conformance_app;
     SQL
 ---
@@ -63,9 +81,8 @@ metadata:
     app.kubernetes.io/name: conformance-postgres
     app.kubernetes.io/instance: {{ .Release.Name }}
   annotations:
-    helm.sh/hook: pre-install,pre-upgrade
-    helm.sh/hook-weight: "-15"
-    helm.sh/resource-policy: keep
+    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook-weight: "-20"
 spec:
   selector:
     app.kubernetes.io/name: conformance-postgres
@@ -73,6 +90,34 @@ spec:
     - name: postgres
       port: 5432
       targetPort: 5432
+---
+# Only the conformance workload and its migration job may reach the database; it needs no egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: conformance-postgres
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: conformance-postgres
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook-weight: "-20"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: conformance-postgres
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: conformance
+              app.kubernetes.io/instance: {{ .Release.Name }}
+      ports:
+        - port: 5432
+          protocol: TCP
+  egress: []
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -83,10 +128,10 @@ metadata:
     app.kubernetes.io/name: conformance-postgres
     app.kubernetes.io/instance: {{ .Release.Name }}
   annotations:
-    # Installed as a hook so it is ready before the migration job (weight -10 < -5) runs.
-    helm.sh/hook: pre-install,pre-upgrade
-    helm.sh/hook-weight: "-10"
-    helm.sh/resource-policy: keep
+    # Created before the migration hook (weight -5). Helm does not wait for Deployment readiness, so the
+    # migrate command itself retries the connection until its deadline.
+    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook-weight: "-20"
 spec:
   replicas: 1
   strategy:
@@ -121,14 +166,13 @@ spec:
               value: postgres
             - name: POSTGRES_PASSWORD
               valueFrom:
-                secretKeyRef:
-                  name: {{ $secretName }}
-                  key: password
-            - name: ROLE_PASSWORD
+                secretKeyRef: {name: {{ $secretName }}, key: superuser-password}
+            - name: MIGRATOR_PASSWORD
               valueFrom:
-                secretKeyRef:
-                  name: {{ $secretName }}
-                  key: password
+                secretKeyRef: {name: {{ $secretName }}, key: migrator-password}
+            - name: APP_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: {{ $secretName }}, key: app-password}
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
           ports:

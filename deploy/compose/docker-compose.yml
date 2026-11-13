@@ -2,6 +2,8 @@
 #   make up PROFILE=core        postgres, redis, keycloak
 #   make up PROFILE=core,obs    + otel-collector, prometheus, tempo, loki, grafana
 # Secrets come from the git-ignored .env (make secrets). Images are pinned.
+# Every port binds to ${BIND_ADDR:-127.0.0.1}: nothing is reachable from the LAN. Only the OTLP receiver can be
+# opened wider (OTLP_BIND_ADDR) for Linux CI, where kind nodes reach the host via the docker bridge gateway.
 name: infrapilot
 
 x-logging: &logging
@@ -30,7 +32,7 @@ services:
       - max_connections=200
       - -c
       - log_min_duration_statement=500ms
-    ports: ["${POSTGRES_PORT:-5432}:5432"]
+    ports: ["${BIND_ADDR:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"]
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
@@ -47,10 +49,12 @@ services:
     image: redis:7.4-alpine
     profiles: [core]
     <<: *logging
-    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
-    ports: ["${REDIS_PORT:-6379}:6379"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    command: ["sh", "-c", "exec redis-server --save '' --appendonly no --maxmemory 128mb --maxmemory-policy allkeys-lru --requirepass \"$$REDIS_PASSWORD\""]
+    ports: ["${BIND_ADDR:-127.0.0.1}:${REDIS_PORT:-6379}:6379"]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -59,7 +63,7 @@ services:
         limits: { memory: 192M }
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.4
+    image: quay.io/keycloak/keycloak:26.4.5
     profiles: [core]
     <<: *logging
     depends_on:
@@ -72,12 +76,13 @@ services:
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
       KC_DB_USERNAME: keycloak
       KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      KC_DB_POOL_MAX_SIZE: "20" # counted in the connection budget (docs/architecture/data.md §7)
       KC_HEALTH_ENABLED: "true"
       KC_METRICS_ENABLED: "true"
       KC_HTTP_MANAGEMENT_PORT: "9000"
       JAVA_OPTS_KC_HEAP: "-Xms256m -Xmx512m"
     ports:
-      - "${KEYCLOAK_PORT:-8180}:8080"
+      - "${BIND_ADDR:-127.0.0.1}:${KEYCLOAK_PORT:-8180}:8080"
     healthcheck:
       # The image has no curl; bash's /dev/tcp reaches the management port.
       test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"status\": \"UP\"' <&3"]
@@ -98,9 +103,9 @@ services:
     volumes:
       - ../../observability/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
     ports:
-      - "${OTEL_COLLECTOR_GRPC_PORT:-4317}:4317"
-      - "${OTEL_COLLECTOR_HTTP_PORT:-4318}:4318"
-      - "13133:13133" # health_check extension
+      - "${OTLP_BIND_ADDR:-127.0.0.1}:${OTEL_COLLECTOR_GRPC_PORT:-4317}:4317"
+      - "${OTLP_BIND_ADDR:-127.0.0.1}:${OTEL_COLLECTOR_HTTP_PORT:-4318}:4318"
+      - "${BIND_ADDR:-127.0.0.1}:13133:13133" # health_check extension (image is distroless: no in-container probe)
     depends_on:
       prometheus: { condition: service_healthy }
       tempo: { condition: service_healthy }
@@ -118,12 +123,11 @@ services:
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=3d
       - --web.enable-remote-write-receiver
-      - --web.enable-lifecycle
     volumes:
       - ../../observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ../../observability/prometheus/rules:/etc/prometheus/rules:ro
       - prometheus-data:/prometheus
-    ports: ["${PROMETHEUS_PORT:-9090}:9090"]
+    ports: ["${BIND_ADDR:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090"]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/-/ready"]
       interval: 5s
@@ -141,7 +145,7 @@ services:
     volumes:
       - ../../observability/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
       - tempo-data:/var/tempo
-    ports: ["${TEMPO_PORT:-3200}:3200"]
+    ports: ["${BIND_ADDR:-127.0.0.1}:${TEMPO_PORT:-3200}:3200"]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3200/ready"]
       interval: 5s
@@ -159,7 +163,7 @@ services:
     volumes:
       - ../../observability/loki/loki.yaml:/etc/loki/loki.yaml:ro
       - loki-data:/loki
-    ports: ["${LOKI_PORT:-3100}:3100"]
+    ports: ["${BIND_ADDR:-127.0.0.1}:${LOKI_PORT:-3100}:3100"]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3100/ready"]
       interval: 5s
@@ -187,7 +191,7 @@ services:
       - ../../observability/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
       - ../../observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
-    ports: ["${GRAFANA_PORT:-3000}:3000"]
+    ports: ["${BIND_ADDR:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"]
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:3000/api/health"]
       interval: 5s

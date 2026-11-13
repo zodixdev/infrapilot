@@ -115,10 +115,15 @@ func TestLibChart_SecurityDefaults(t *testing.T) {
 	require.Equal(t, "2s", envs["SHUTDOWN_DELAY"])
 	require.Equal(t, "20s", envs["SHUTDOWN_TIMEOUT"])
 	require.Equal(t, "conformance", envs["SERVICE_NAME"])
+	require.Equal(t, "dev", envs["SERVICE_VERSION"], "version follows the deployed image tag, not appVersion")
 	require.Equal(t, ":8081", envs["ADMIN_ADDR"])
 
 	require.InDelta(t, 0, dig(t, dep.Spec, "strategy", "rollingUpdate", "maxUnavailable"), 0.001)
-	require.Contains(t, ps, "topologySpreadConstraints")
+	spread := as[[]any](t, ps["topologySpreadConstraints"])
+	require.Len(t, spread, 2, "zone and hostname")
+	for _, c := range spread {
+		require.Equal(t, []any{"pod-template-hash"}, as[map[string]any](t, c)["matchLabelKeys"])
+	}
 }
 
 func TestLibChart_NetworkPolicyDefaultDeny(t *testing.T) {
@@ -142,17 +147,55 @@ func TestLibChart_NetworkPolicyDefaultDeny(t *testing.T) {
 		require.Contains(t, rule, "ports", "ingress rules are port-scoped")
 	}
 
-	// Disabling the policy removes it (opt-out must be explicit).
-	off := render(t, "--set", "networkPolicy.enabled=false")
-	for _, o := range off {
-		require.NotEqual(t, "NetworkPolicy", o.Kind)
+	// The workload policy selects only serving pods.
+	sel := as[map[string]any](t, dig(t, np.Spec, "podSelector", "matchLabels"))
+	require.Equal(t, "server", sel["app.kubernetes.io/component"])
+
+	// The test-pod exception is scoped to this release's test pods, and absent when tests are disabled.
+	found := false
+	for _, r := range ingress {
+		for _, peer := range as[[]any](t, as[map[string]any](t, r)["from"]) {
+			podSel, _ := as[map[string]any](t, peer)["podSelector"].(map[string]any)
+			labels, ok := podSel["matchLabels"].(map[string]any)
+			if ok && labels["app.kubernetes.io/component"] == "test" {
+				found = true
+				require.Equal(t, "conformance-test", labels["app.kubernetes.io/name"])
+				require.Equal(t, "conformance", labels["app.kubernetes.io/instance"])
+			}
+		}
+	}
+	require.True(t, found, "tests.enabled=true adds the scoped test-pod rule")
+	noTests := find(t, render(t, "--set", "tests.enabled=false"), "NetworkPolicy", "conformance")
+	for _, r := range as[[]any](t, noTests.Spec["ingress"]) {
+		for _, peer := range as[[]any](t, as[map[string]any](t, r)["from"]) {
+			labels, _ := as[map[string]any](t, peer)["podSelector"].(map[string]any)
+			require.NotContains(t, labels, "matchLabels", "no test-pod rule without tests.enabled")
+		}
+	}
+
+	// The migration job gets its own policy (it runs before the release's policy exists on install).
+	mig := find(t, objs, "NetworkPolicy", "conformance-migrate")
+	require.Equal(t, "migration", dig(t, mig.Spec, "podSelector", "matchLabels", "app.kubernetes.io/component"))
+
+	// Disabling the workload policy removes it (opt-out must be explicit).
+	for _, o := range render(t, "--set", "networkPolicy.enabled=false") {
+		if o.Kind == "NetworkPolicy" {
+			require.NotEqual(t, "conformance", o.Metadata["name"])
+		}
 	}
 }
 
 func TestLibChart_AvailabilityObjects(t *testing.T) {
 	objs := render(t)
 	pdb := find(t, objs, "PodDisruptionBudget", "conformance")
-	require.InDelta(t, 1, pdb.Spec["minAvailable"], 0.001)
+	require.InDelta(t, 1, pdb.Spec["maxUnavailable"], 0.001)
+	require.Equal(t, "AlwaysAllow", pdb.Spec["unhealthyPodEvictionPolicy"])
+	require.Equal(t, "server", dig(t, pdb.Spec, "selector", "matchLabels", "app.kubernetes.io/component"),
+		"migration and test pods must not count as available replicas")
+	// A single replica gets no PDB (it would block every node drain).
+	for _, o := range render(t, "--set", "replicaCount=1") {
+		require.NotEqual(t, "PodDisruptionBudget", o.Kind)
+	}
 
 	svc := find(t, objs, "Service", "conformance")
 	names := map[string]bool{}

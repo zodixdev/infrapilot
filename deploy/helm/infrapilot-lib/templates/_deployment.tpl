@@ -17,11 +17,12 @@ spec:
     {{- toYaml $v.strategy | nindent 4 }}
   selector:
     matchLabels:
-      {{- include "infrapilot-lib.selectorLabels" . | nindent 6 }}
+      {{- include "infrapilot-lib.workloadSelectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
         {{- include "infrapilot-lib.labels" . | nindent 8 }}
+        app.kubernetes.io/component: server
         {{- with $v.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -107,7 +108,9 @@ spec:
         - {{- toYaml . | nindent 10 }}
           labelSelector:
             matchLabels:
-              {{- include "infrapilot-lib.selectorLabels" $ | nindent 14 }}
+              {{- include "infrapilot-lib.workloadSelectorLabels" $ | nindent 14 }}
+          # Count only pods of the same ReplicaSet so a rollout's old pods do not skew placement.
+          matchLabelKeys: [pod-template-hash]
         {{- end }}
       {{- end }}
       {{- with $v.nodeSelector }}

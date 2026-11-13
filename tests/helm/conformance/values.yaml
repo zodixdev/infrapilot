@@ -21,9 +21,15 @@ envFrom:
 otlp:
   endpoint: host.docker.internal:4317
   insecure: true
+  # Where the collector lives, as seen from the pods. Cluster-internal ranges are excluded so the rule cannot
+  # be used to reach other workloads on 4317.
+  egressCIDR: 0.0.0.0/0
+  egressExcept: [10.0.0.0/8]
 shutdown:
   delaySeconds: 2
   timeoutSeconds: 20
+tests:
+  enabled: true
 migration:
   enabled: true
   args: [migrate]
@@ -33,11 +39,18 @@ migration:
         secretKeyRef:
           name: conformance-postgres
           key: migrator-url
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: conformance-postgres
+      ports:
+        - port: 5432
+          protocol: TCP
 networkPolicy:
   enabled: true
-  ingress:
-    # helm test pods and the e2e traffic generator run in the release namespace.
-    - podSelector: {}
+  # No peers call this test service except its own test pods (allowed by tests.enabled).
+  ingress: []
   egress:
     rules:
       - to:
@@ -46,13 +59,6 @@ networkPolicy:
                 app.kubernetes.io/name: conformance-postgres
         ports:
           - port: 5432
-            protocol: TCP
-      # OTLP to the host collector (docker compose obs profile).
-      - to:
-          - ipBlock:
-              cidr: 0.0.0.0/0
-        ports:
-          - port: 4317
             protocol: TCP
 # Test-only PostgreSQL deployed next to the service (never used by real service charts).
 postgres:

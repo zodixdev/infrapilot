@@ -10,11 +10,9 @@ metadata:
   name: {{ $svc }}-test-http
   namespace: {{ .Release.Namespace }}
   labels:
-    # Deliberately NOT the selector labels: the pod must not become a Service endpoint or a NetworkPolicy subject.
-    app.kubernetes.io/name: {{ include "infrapilot-lib.name" . }}-test
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    # Deliberately NOT the workload labels: the pod must not become a Service endpoint or NetworkPolicy subject.
+    {{- include "infrapilot-lib.testSelectorLabels" . | nindent 4 }}
     app.kubernetes.io/part-of: infrapilot
-    app.kubernetes.io/component: test
   annotations:
     helm.sh/hook: test
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
@@ -50,11 +48,9 @@ metadata:
   name: {{ $svc }}-test-grpc
   namespace: {{ .Release.Namespace }}
   labels:
-    # Deliberately NOT the selector labels: the pod must not become a Service endpoint or a NetworkPolicy subject.
-    app.kubernetes.io/name: {{ include "infrapilot-lib.name" . }}-test
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    # Deliberately NOT the workload labels: the pod must not become a Service endpoint or NetworkPolicy subject.
+    {{- include "infrapilot-lib.testSelectorLabels" . | nindent 4 }}
     app.kubernetes.io/part-of: infrapilot
-    app.kubernetes.io/component: test
   annotations:
     helm.sh/hook: test
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded

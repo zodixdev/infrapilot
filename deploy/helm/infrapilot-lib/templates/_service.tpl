@@ -34,7 +34,7 @@ metadata:
 spec:
   type: {{ $v.service.type }}
   selector:
-    {{- include "infrapilot-lib.selectorLabels" . | nindent 4 }}
+    {{- include "infrapilot-lib.workloadSelectorLabels" . | nindent 4 }}
   ports:
     - name: http
       port: {{ $v.ports.http }}
@@ -55,7 +55,8 @@ spec:
 
 {{- define "infrapilot-lib.pdb" -}}
 {{- $v := include "infrapilot-lib.values" . | fromYaml -}}
-{{- if $v.pdb.enabled }}
+{{- $minReplicas := ternary (int $v.hpa.minReplicas) (int $v.replicaCount) $v.hpa.enabled -}}
+{{- if and $v.pdb.enabled (gt $minReplicas 1) }}
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
@@ -65,10 +66,12 @@ metadata:
   labels:
     {{- include "infrapilot-lib.labels" . | nindent 4 }}
 spec:
-  minAvailable: {{ $v.pdb.minAvailable }}
+  maxUnavailable: {{ $v.pdb.maxUnavailable }}
+  # Pods that are not ready may always be evicted: they serve nothing and must not block a drain.
+  unhealthyPodEvictionPolicy: AlwaysAllow
   selector:
     matchLabels:
-      {{- include "infrapilot-lib.selectorLabels" . | nindent 6 }}
+      {{- include "infrapilot-lib.workloadSelectorLabels" . | nindent 6 }}
 {{- end }}
 {{- end -}}
 
