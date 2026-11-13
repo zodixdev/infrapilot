@@ -14,7 +14,7 @@ hpa:
 ports:
   http: 8080
   admin: 8081
-  grpc: null   # no internal API
+  grpc: 0   # no internal API (0 disables; null would fall back to the library default)
 resources:
   requests:
     cpu: 100m

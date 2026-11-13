@@ -366,3 +366,15 @@ func toJSON(t *testing.T, v any) string {
 	require.NoError(t, err)
 	return string(b)
 }
+
+func TestLibChart_DisabledPortsRenderNothing(t *testing.T) {
+	t.Parallel()
+	objs := render(t, "--set", "ports.grpc=0")
+	for _, o := range objs {
+		require.False(t, o.Kind == "Service" && o.Metadata["name"] == "conformance-grpc", "no headless gRPC Service without a gRPC port")
+		require.False(t, o.Kind == "Pod" && o.Metadata["name"] == "conformance-test-grpc", "no gRPC test without a gRPC port")
+	}
+	env := containerEnv(t, find(t, objs, "Deployment", "conformance"))
+	_, hasGRPC := env["GRPC_ADDR"]
+	require.False(t, hasGRPC)
+}

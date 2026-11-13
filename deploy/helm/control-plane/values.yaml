@@ -7,7 +7,7 @@ image:
   tag: ""
 replicaCount: 2
 ports:
-  http: null   # internal gRPC + admin only
+  http: 0   # internal gRPC + admin only (0 disables; null would fall back to the library default)
   admin: 8081
   grpc: 9090
 resources:

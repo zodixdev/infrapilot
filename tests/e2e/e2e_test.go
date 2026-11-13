@@ -217,29 +217,31 @@ func TestE2E_ConformanceRelease(t *testing.T) {
 	for _, r := range res.Data.Result {
 		emitted[r.Metric["__name__"]] = true
 	}
-	for _, name := range referencedMetrics(t) {
+	for _, name := range referencedMetrics(t, "prometheus/rules/go-service.yaml", "grafana/dashboards/go-service.json") {
+		if strings.HasPrefix(name, "tls_") {
+			continue // the conformance workload runs without TLS; services check certificate metrics themselves
+		}
 		assert.True(t, emitted[name], "metric %q is used by rules/dashboards but not emitted by %s", name, release)
 	}
 }
 
-// referencedMetrics extracts the InfraPilot metric names used in alert rules and dashboards. `up` is
-// excluded: it exists only on the pull path by design (ServiceTelemetryAbsent covers push).
-func referencedMetrics(t *testing.T) []string {
+// referencedMetrics extracts the InfraPilot metric names used in the given alert rule and dashboard files
+// (paths relative to observability/). `up` is excluded: it exists only on the pull path by design
+// (ServiceTelemetryAbsent covers push).
+func referencedMetrics(t *testing.T, files ...string) []string {
 	t.Helper()
-	root, err := filepath.Abs(filepath.Join("..", ".."))
+	root, err := filepath.Abs(filepath.Join("..", "..", "observability"))
 	require.NoError(t, err)
-	files, err := filepath.Glob(filepath.Join(root, "observability", "prometheus", "rules", "*.yaml"))
-	require.NoError(t, err)
-	dash, err := filepath.Glob(filepath.Join(root, "observability", "grafana", "dashboards", "*.json"))
-	require.NoError(t, err)
-	re := regexp.MustCompile(`\b(?:http_server|grpc_server|health|pgxpool|go|process)_[a-z0-9_]+`)
+	re := regexp.MustCompile(`\b(?:http_server|grpc_server|grpc_client|health|pgxpool|go|process|gateway|controlplane|tls)_[a-z0-9_]+`)
 	seen := map[string]bool{}
 	var out []string
-	for _, f := range append(files, dash...) {
-		b, err := os.ReadFile(f)
+	for _, f := range files {
+		b, err := os.ReadFile(filepath.Join(root, f))
 		require.NoError(t, err)
-		for _, m := range re.FindAllString(string(b), -1) {
-			if seen[m] {
+		for _, loc := range re.FindAllIndex(b, -1) {
+			m := string(b[loc[0]:loc[1]])
+			// Skip file names in comments (e.g. "api-gateway_test.yaml") and duplicates.
+			if seen[m] || (loc[1] < len(b) && b[loc[1]] == '.') {
 				continue
 			}
 			seen[m] = true

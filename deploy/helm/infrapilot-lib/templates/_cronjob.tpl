@@ -27,6 +27,9 @@ spec:
     {{- with $j.egress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
+    {{- with $v.networkPolicy.egress.extraRules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 {{- end }}
 ---
 apiVersion: batch/v1

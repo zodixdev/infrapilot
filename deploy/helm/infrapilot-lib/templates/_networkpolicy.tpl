@@ -61,6 +61,9 @@ spec:
     {{- with $v.networkPolicy.egress.rules }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
+    {{- with $v.networkPolicy.egress.extraRules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 {{- end }}
 {{- end -}}
 

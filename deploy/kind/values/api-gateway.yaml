@@ -1,0 +1,61 @@
+# api-gateway on kind (make deploy-services). Reached from the host on 127.0.0.1:28080 (NodePort 30080).
+environment: test
+replicaCount: 2
+hpa:
+  enabled: false   # no metrics-server in kind; fixed replicas keep load tests comparable
+tests:
+  enabled: true
+service:
+  type: NodePort
+  nodePorts: {http: 30080}
+envFrom:
+  - configMapRef: {name: infrapilot-otlp}
+env:
+  - name: OIDC_ISSUER
+    value: http://localhost:28180/realms/infrapilot
+  - name: OIDC_JWKS_URL
+    value: http://keycloak.infrapilot-deps.svc:8080/realms/infrapilot/protocol/openid-connect/certs
+  # The dashboard client and the test-only password-grant client created by the load and e2e tests.
+  - name: OIDC_AUTHORIZED_PARTIES
+    value: infrapilot-dashboard,infrapilot-e2e
+  - name: CACHE_SIGNING_KEY
+    valueFrom:
+      secretKeyRef: {name: api-gateway-cache, key: signing-key}
+  - name: REDIS_ADDR
+    value: redis.infrapilot-deps.svc:6379
+  - name: REDIS_PASSWORD
+    valueFrom:
+      secretKeyRef: {name: api-gateway-redis, key: password}
+  - name: CONTROLPLANE_TARGET
+    value: dns:///control-plane-grpc.infrapilot.svc:9090
+  - name: CONTROLPLANE_SERVER_NAME
+    value: control-plane-grpc.infrapilot.svc
+  - name: CONTROLPLANE_SERVER_IDENTITY
+    value: spiffe://infrapilot.local/ns/infrapilot/sa/control-plane
+  - name: CONTROLPLANE_TLS_CERT_FILE
+    value: /etc/infrapilot/tls/tls.crt
+  - name: CONTROLPLANE_TLS_KEY_FILE
+    value: /etc/infrapilot/tls/tls.key
+  - name: CONTROLPLANE_TLS_CA_FILE
+    value: /etc/infrapilot/tls/ca.crt
+  - name: GRPC_DISABLED
+    value: "true"
+  - name: CORS_ALLOWED_ORIGINS
+    value: http://localhost:3000
+networkPolicy:
+  # kind has no ingress controller: the NodePort is reached from the node itself.
+  ingress:
+    - ipBlock: {cidr: 0.0.0.0/0}
+  egress:
+    rules:
+      - to:
+          - podSelector: {matchLabels: {app.kubernetes.io/name: control-plane}}
+        ports: [{port: 9090, protocol: TCP}]
+      - to:
+          - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: infrapilot-deps}}
+            podSelector: {matchLabels: {app: redis}}
+        ports: [{port: 6379, protocol: TCP}]
+      - to:
+          - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: infrapilot-deps}}
+            podSelector: {matchLabels: {app: keycloak}}
+        ports: [{port: 8080, protocol: TCP}]

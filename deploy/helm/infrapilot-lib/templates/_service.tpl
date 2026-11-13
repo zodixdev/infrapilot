@@ -41,6 +41,9 @@ spec:
       port: {{ $v.ports.http }}
       targetPort: http
       protocol: TCP
+      {{- if and (eq $v.service.type "NodePort") $v.service.nodePorts.http }}
+      nodePort: {{ $v.service.nodePorts.http }}
+      {{- end }}
     {{- end }}
     - name: admin
       port: {{ $v.ports.admin }}

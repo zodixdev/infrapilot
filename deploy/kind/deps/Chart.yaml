@@ -1,0 +1,9 @@
+apiVersion: v2
+name: infrapilot-deps
+description: >-
+  Stateful dependencies for local kind clusters only (ADR-0011 "in-cluster equivalents"): PostgreSQL provisioned with
+  the ADR-0018 roles by the same script as docker compose, Redis, and Keycloak importing the committed realm.
+  Production uses operators (CloudNativePG, managed Redis, Keycloak operator) and External Secrets instead.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

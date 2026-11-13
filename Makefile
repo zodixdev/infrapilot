@@ -33,6 +33,7 @@ OTLP_EGRESS_CIDR ?= $(shell docker exec $(KIND_CLUSTER)-control-plane getent aho
 HELM_RELEASE ?= conformance
 HELM_NAMESPACE ?= infrapilot-test
 
+.PHONY: kind-platform kind-deps images deploy-services undeploy-services e2e-services load-smoke
 .PHONY: help bootstrap gen fmt fmt-check lint lint-go lint-proto lint-helm lint-obs lint-docker vuln db-provision deploy-only undeploy \
         test test-integration verify secrets up down ps logs cluster cluster-down image deploy e2e clean
 
@@ -152,6 +153,57 @@ undeploy: ## Remove the conformance release and its namespace (including the kep
 e2e: ## Verify the deployed conformance service reports traces/metrics to the obs profile (needs make up PROFILE=obs)
 	@cd $(ROOT)/tests && KUBE_CONTEXT=$(KUBE_CONTEXT) HELM_NAMESPACE=$(HELM_NAMESPACE) HELM_RELEASE=$(HELM_RELEASE) \
 	    $(GO) test -count=1 -timeout 10m -tags e2e -run 'E2E' ./e2e/...
+
+# ---------------------------------------------------------------- services on kind (M02+)
+CERT_MANAGER_VERSION ?= v1.19.1
+SERVICES_NAMESPACE ?= infrapilot
+DEPS_NAMESPACE ?= infrapilot-deps
+SERVICES ?= control-plane api-gateway
+SERVICE_TAG ?= $(GIT_REV)
+
+kind-platform: ## Install cert-manager and the internal CA issuer into kind (idempotent)
+	@helm --kube-context $(KUBE_CONTEXT) upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager \
+	    --version $(CERT_MANAGER_VERSION) --namespace cert-manager --create-namespace --set crds.enabled=true --wait --timeout 300s
+	@kubectl --context $(KUBE_CONTEXT) apply -f $(ROOT)/deploy/kind/cert-manager/issuers.yaml
+	@kubectl --context $(KUBE_CONTEXT) wait --for=condition=Ready clusterissuer/infrapilot-internal-ca --timeout=120s
+
+kind-deps: ## Install PostgreSQL, Redis and Keycloak for the services into kind (kind only; idempotent)
+	@kubectl --context $(KUBE_CONTEXT) create namespace $(SERVICES_NAMESPACE) --dry-run=client -o yaml | kubectl --context $(KUBE_CONTEXT) apply -f - >/dev/null
+	@kubectl --context $(KUBE_CONTEXT) label namespace $(SERVICES_NAMESPACE) --overwrite \
+	    pod-security.kubernetes.io/enforce=restricted pod-security.kubernetes.io/warn=restricted >/dev/null
+	@kubectl --context $(KUBE_CONTEXT) create namespace $(DEPS_NAMESPACE) --dry-run=client -o yaml | kubectl --context $(KUBE_CONTEXT) apply -f - >/dev/null
+	@kubectl --context $(KUBE_CONTEXT) label namespace $(DEPS_NAMESPACE) --overwrite pod-security.kubernetes.io/enforce=baseline >/dev/null
+	@helm --kube-context $(KUBE_CONTEXT) upgrade --install infrapilot-deps $(ROOT)/deploy/kind/deps --namespace $(DEPS_NAMESPACE) \
+	    --set servicesNamespace=$(SERVICES_NAMESPACE) --set otlp.endpoint=$(OTLP_ENDPOINT) --wait --timeout 600s
+
+images: ## Build the service images (tag: git revision)
+	@for s in $(SERVICES); do docker build -q -f $(ROOT)/services/$$s/Dockerfile -t infrapilot/$$s:$(SERVICE_TAG) $(ROOT) >/dev/null && echo "built infrapilot/$$s:$(SERVICE_TAG)"; done
+
+deploy-services: images ## Build, load and install the services into kind, then run their helm tests (needs kind-platform kind-deps)
+	@for s in $(SERVICES); do \
+	  $(GOTOOL) kind load docker-image infrapilot/$$s:$(SERVICE_TAG) --name $(KIND_CLUSTER) >/dev/null && \
+	  helm dependency update $(ROOT)/deploy/helm/$$s >/dev/null && \
+	  helm --kube-context $(KUBE_CONTEXT) upgrade --install $$s $(ROOT)/deploy/helm/$$s --namespace $(SERVICES_NAMESPACE) \
+	    -f $(ROOT)/deploy/kind/values/$$s.yaml --set image.tag=$(SERVICE_TAG) \
+	    $(if $(OTLP_EGRESS_CIDR),--set 'networkPolicy.egress.extraRules[0].to[0].ipBlock.cidr=$(OTLP_EGRESS_CIDR)' --set 'networkPolicy.egress.extraRules[0].ports[0].port=4317',) \
+	    --wait --timeout 300s && \
+	  helm --kube-context $(KUBE_CONTEXT) test $$s --namespace $(SERVICES_NAMESPACE) --logs || exit 1; \
+	done
+
+e2e-services: ## End-to-end checks of the deployed services: API, cross-service traces, metrics, retention job (needs make up PROFILE=obs)
+	@cd $(ROOT)/tests && KUBE_CONTEXT=$(KUBE_CONTEXT) SERVICES_NAMESPACE=$(SERVICES_NAMESPACE) DEPS_NAMESPACE=$(DEPS_NAMESPACE) \
+	    $(GO) test -count=1 -timeout 10m -tags e2e -run 'TestE2E_Services' ./e2e/...
+
+LOAD_EVIDENCE ?= $(ROOT)/.local-evidence/M02
+
+load-smoke: ## k6 smoke test against the services on kind: p99 < 300 ms at 200 rps (writes a summary to LOAD_EVIDENCE)
+	@mkdir -p $(LOAD_EVIDENCE)
+	@KC_ADMIN_PASSWORD="$$(kubectl --context $(KUBE_CONTEXT) -n $(DEPS_NAMESPACE) get secret deps-credentials -o jsonpath='{.data.keycloak-admin-password}' | base64 -d)" \
+	  k6 run --summary-export $(LOAD_EVIDENCE)/k6-smoke-summary.json $(ROOT)/tests/load/smoke.js
+
+undeploy-services: ## Remove the services and their dependencies from kind
+	@for s in $(SERVICES); do helm --kube-context $(KUBE_CONTEXT) uninstall $$s --namespace $(SERVICES_NAMESPACE) --ignore-not-found; done
+	@helm --kube-context $(KUBE_CONTEXT) uninstall infrapilot-deps --namespace $(DEPS_NAMESPACE) --ignore-not-found
 
 clean: ## Remove build artefacts
 	@rm -rf $(ROOT)/bin $(ROOT)/coverage.*

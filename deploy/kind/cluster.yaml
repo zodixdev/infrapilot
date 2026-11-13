@@ -9,3 +9,7 @@ nodes:
     image: kindest/node:v1.34.0@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a
     labels:
       infrapilot.io/role: worker
+    # Host access without port-forwarding (load tests): the api-gateway NodePort and Keycloak (token issuer URL).
+    extraPortMappings:
+      - {containerPort: 30080, hostPort: 28080, listenAddress: 127.0.0.1, protocol: TCP}
+      - {containerPort: 30180, hostPort: 28180, listenAddress: 127.0.0.1, protocol: TCP}

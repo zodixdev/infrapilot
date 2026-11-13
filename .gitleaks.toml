@@ -12,4 +12,6 @@ paths = [
 # .env.example may only contain empty secret assignments; any real value in it is reported.
 regexes = [
   '''(?m)^[A-Z0-9_]+=$''',
+  # OAuth client ids accepted by the gateway in local clusters (OIDC_AUTHORIZED_PARTIES): identifiers, not secrets.
+  '''^infrapilot-(dashboard|e2e)$''',
 ]

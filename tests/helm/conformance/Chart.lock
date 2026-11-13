@@ -1,6 +1,6 @@
 dependencies:
 - name: infrapilot-lib
   repository: file://../../../deploy/helm/infrapilot-lib
-  version: 0.2.0
-digest: sha256:d09f2e4ae3d2063bec38bf1e6fa39d4f33d2cccdc99f6e0495976257c0355948
-generated: "2026-11-13T12:31:46.480909+03:00"
+  version: 0.3.0
+digest: sha256:fe408ac61a99ab591898c68a8c6b5e66da345420c6422236abec2e8c003b0407
+generated: "2026-11-13T13:21:00.395791+03:00"

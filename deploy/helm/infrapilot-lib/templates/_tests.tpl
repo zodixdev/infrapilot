@@ -64,10 +64,32 @@ spec:
       image: {{ $v.tests.grpcHealthProbeImage }}
       securityContext:
         {{- toYaml $v.securityContext | nindent 8 }}
-      args: ["-addr={{ $svc }}:{{ $v.ports.grpc }}", "-connect-timeout=30s", "-rpc-timeout=5s"]
+      args:
+        - "-addr={{ $svc }}:{{ $v.ports.grpc }}"
+        - "-connect-timeout=30s"
+        - "-rpc-timeout=5s"
+        {{- if $v.tls.enabled }}
+        # mTLS servers require a client certificate; health is exempt from the peer allow-list (ADR-0025).
+        - "-tls"
+        - "-tls-ca-cert={{ $v.tls.mountPath }}/ca.crt"
+        - "-tls-client-cert={{ $v.tls.mountPath }}/tls.crt"
+        - "-tls-client-key={{ $v.tls.mountPath }}/tls.key"
+        - "-tls-server-name={{ $svc }}.{{ .Release.Namespace }}.svc"
+        {{- end }}
       resources:
         requests: {cpu: 10m, memory: 16Mi}
         limits: {memory: 64Mi}
+      {{- if $v.tls.enabled }}
+      volumeMounts:
+        - name: tls
+          mountPath: {{ $v.tls.mountPath }}
+          readOnly: true
+  volumes:
+    - name: tls
+      secret:
+        secretName: {{ $svc }}-tls
+        defaultMode: 0440
+      {{- end }}
 {{- end }}
 {{- end }}
 {{- end -}}

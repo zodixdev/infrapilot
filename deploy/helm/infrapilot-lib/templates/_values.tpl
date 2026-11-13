@@ -25,7 +25,8 @@ command: []
 args: []
 env: []
 envFrom: []
-# Container ports by name. Set http or grpc to null for services without that listener.
+# Container ports by name. Set http or grpc to 0 for services without that listener (null is dropped by Helm
+# and would fall back to these defaults).
 ports:
   http: 8080
   admin: 8081
@@ -33,6 +34,8 @@ ports:
 service:
   type: ClusterIP
   annotations: {}
+  # Fixed node ports by port name when type is NodePort (local clusters only; production uses an ingress).
+  nodePorts: {}
 serviceAccount:
   create: true
   annotations: {}
@@ -118,6 +121,9 @@ networkPolicy:
     dns: true
     # Extra egress rules in NetworkPolicyEgressRule form.
     rules: []
+    # Environment-wide additions (e.g. the telemetry collector) applied to server pods and cron jobs; kept apart
+    # from `rules` because Helm replaces lists instead of merging them.
+    extraRules: []
 serviceMonitor:
   enabled: true
   interval: 15s

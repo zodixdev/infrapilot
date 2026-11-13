@@ -1,0 +1,36 @@
+# control-plane on kind (make deploy-services). Telemetry egress to the host collector is added by the Makefile
+# (its address is only known at deploy time).
+environment: test
+replicaCount: 2
+tests:
+  enabled: true
+envFrom:
+  - configMapRef: {name: infrapilot-otlp}
+networkPolicy:
+  egress:
+    rules:
+      - to:
+          - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: infrapilot-deps}}
+            podSelector: {matchLabels: {app: postgres}}
+        ports: [{port: 5432, protocol: TCP}]
+migration:
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: infrapilot-deps}}
+          podSelector: {matchLabels: {app: postgres}}
+      ports: [{port: 5432, protocol: TCP}]
+cronJobs:
+  - name: purge
+    schedule: "17 * * * *"
+    args: [purge]
+    env:
+      - name: BATCH_DATABASE_URL
+        valueFrom:
+          secretKeyRef: {name: control-plane-db, key: batch-url}
+    envFrom:
+      - configMapRef: {name: infrapilot-otlp}
+    egress:
+      - to:
+          - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: infrapilot-deps}}
+            podSelector: {matchLabels: {app: postgres}}
+        ports: [{port: 5432, protocol: TCP}]
