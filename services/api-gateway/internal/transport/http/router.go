@@ -38,7 +38,8 @@ type Deps struct {
 // BasePath of every public route (ADR-0003: versioned by path).
 const BasePath = "/v1"
 
-// NewHandler assembles the public API, outermost first: CORS → authentication → rate limit → contract
+// NewHandler assembles the public API, outermost first: route resolution (metrics and spans name the operation's
+// route even for requests rejected before routing) → CORS → authentication → rate limit → contract
 // validation (types, sizes, required credentials per operation) → generated strict server, whose operation
 // middleware applies per-operation limits and the edge pre-authorization.
 func NewHandler(d Deps) (http.Handler, error) {
@@ -78,7 +79,7 @@ func NewHandler(d Deps) (http.Handler, error) {
 			httpserver.WriteProblemBody(w, r, httpserver.Problem{Status: http.StatusBadRequest, Code: codeValidation, Title: "invalid parameter"})
 		},
 	})
-	return httpserver.Chain(mux, cors(d.CORSOrigins), authenticate(d.Verifier, d.Keys, lim, d.Logger), lim.middleware, validator), nil
+	return httpserver.Chain(mux, httpserver.RouteFrom(mux), cors(d.CORSOrigins), authenticate(d.Verifier, d.Keys, lim, d.Logger), lim.middleware, validator), nil
 }
 
 // newValidator builds the OpenAPI request validator; the library panics on an unroutable document, which is

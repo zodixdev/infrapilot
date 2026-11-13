@@ -462,3 +462,55 @@ func TestWriteProblemBody_FieldErrors(t *testing.T) {
 	require.JSONEq(t, `{"type":"about:blank","title":"bad","status":400,"instance":"/v1/x","code":"validation_failed",
 		"trace_id":"00000000000000000000000000000000","errors":[{"field":"name","message":"required"}]}`, rec.Body.String())
 }
+
+// TestRouteFrom_PatternSurvivesRequestCopies: middleware between the instrumentation and the mux that replaces the
+// request (r.WithContext, as authentication does) must not turn every route into "unmatched".
+func TestRouteFrom_PatternSurvivesRequestCopies(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	metrics, err := httpserver.Metrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	require.NoError(t, err)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/orgs/{id}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
+	type ctxKey struct{}
+	copying := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, "principal")))
+		})
+	}
+	unauthenticated := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") == "" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+	api := httpserver.Chain(mux, httpserver.RouteFrom(mux), copying, unauthenticated)
+	h := httpserver.Chain(api, httpserver.Tracing(tp, "svc"), metrics, httpserver.AccessLog(slog.New(slog.DiscardHandler)))
+
+	for _, auth := range []string{"Bearer x", "Bearer x", ""} {
+		req := httptest.NewRequest(http.MethodGet, "/v1/orgs/42", http.NoBody)
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		h.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	nope := httptest.NewRequest(http.MethodGet, "/v1/nope", http.NoBody)
+	nope.Header.Set("Authorization", "Bearer x")
+	h.ServeHTTP(httptest.NewRecorder(), nope)
+
+	counts := collectCounts(t, reader)
+	require.Equal(t, map[string]int64{
+		"GET /v1/orgs/{id} 418": 2,
+		"GET /v1/orgs/{id} 401": 1, // rejected before reaching the mux, still attributed to its route
+		"GET unmatched 404":     1,
+	}, counts)
+	names := map[string]int{}
+	for _, s := range exporter.GetSpans() {
+		names[s.Name]++
+	}
+	require.Equal(t, 3, names["GET /v1/orgs/{id}"], "spans are named after the route: %v", names)
+}

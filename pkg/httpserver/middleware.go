@@ -160,7 +160,7 @@ func BodyLimit(maxBytes int64) Middleware {
 // Metrics are produced by Metrics, so otelhttp's own instruments are disabled.
 func Tracing(tp trace.TracerProvider, serverName string) Middleware {
 	return func(next http.Handler) http.Handler {
-		return otelhttp.NewHandler(next, serverName,
+		h := otelhttp.NewHandler(next, serverName,
 			otelhttp.WithTracerProvider(tp),
 			otelhttp.WithMeterProvider(noop.NewMeterProvider()),
 			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
@@ -170,6 +170,8 @@ func Tracing(tp trace.TracerProvider, serverName string) Middleware {
 				return normalizeMethod(r.Method)
 			}),
 		)
+		// The route holder is created outside otelhttp so the request copies below share it without copying again.
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { h.ServeHTTP(w, withRouteInfo(r)) })
 	}
 }
 
@@ -198,6 +200,7 @@ func Metrics(mp metric.MeterProvider) (Middleware, error) {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
+			r = withRouteInfo(r)
 			ctx := r.Context()
 			inflight.Add(ctx, 1)
 			rw := wrap(w)
@@ -391,9 +394,51 @@ func (w *statusWriter) Flush() {
 // Unwrap lets http.ResponseController reach Hijack/SetDeadline on the underlying writer.
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// routePattern returns the matched ServeMux pattern without its method prefix ("GET /orgs/{id}" → "/orgs/{id}").
+// RouteFrom resolves the request's ServeMux pattern before the request reaches mux and records it for Metrics,
+// AccessLog and Tracing. ServeMux writes Request.Pattern only on the request value it receives, so without this the
+// pattern is invisible to them whenever middleware in between replaces the request (r.WithContext), and every
+// request would be labelled "unmatched". Place it outermost in a handler that ends in mux.
+func RouteFrom(mux *http.ServeMux) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if _, p := mux.Handler(r); p != "" {
+				route := stripMethod(p)
+				if ri, ok := r.Context().Value(routeKey{}).(*routeInfo); ok {
+					ri.pattern = route
+				}
+				trace.SpanFromContext(r.Context()).SetName(normalizeMethod(r.Method) + " " + route)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+type routeKey struct{}
+
+// routeInfo carries the route resolved by RouteFrom back to the middleware that created it. It is written and read
+// on the request's own goroutine.
+type routeInfo struct{ pattern string }
+
+func withRouteInfo(r *http.Request) *http.Request {
+	if _, ok := r.Context().Value(routeKey{}).(*routeInfo); ok {
+		return r
+	}
+	return r.WithContext(context.WithValue(r.Context(), routeKey{}, &routeInfo{}))
+}
+
+// routePattern returns the matched ServeMux pattern without its method prefix ("GET /orgs/{id}" → "/orgs/{id}"):
+// the one the mux set on this request, else the one RouteFrom recorded.
 func routePattern(r *http.Request) string {
-	p := r.Pattern
+	if r.Pattern != "" {
+		return stripMethod(r.Pattern)
+	}
+	if ri, ok := r.Context().Value(routeKey{}).(*routeInfo); ok {
+		return ri.pattern
+	}
+	return ""
+}
+
+func stripMethod(p string) string {
 	if i := strings.IndexByte(p, ' '); i >= 0 {
 		return p[i+1:]
 	}
