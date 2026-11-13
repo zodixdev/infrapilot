@@ -9,6 +9,9 @@
 | Agent | mTLS client cert issued by agent-manager internal CA after one-time enrollment token; 24 h cert TTL, auto-rotated at 2/3 lifetime | Bound to one org + resource; can only receive commands for itself |
 | Service | Kubernetes ServiceAccount + TLS (cert-manager); gRPC interceptors verify peer identity allow-list | Per-RPC allow-list of calling services |
 
+Role/permission matrix, API-key scopes and enforcement points: ADR-0022. Service identities and how the end-user
+principal reaches internal services: ADR-0025. Gateway JWKS/rate-limit/cache behavior: ADR-0026.
+
 ## 2. Remote actions (highest-risk feature)
 
 - Agents execute **only allow-listed action types** (e.g. `restart_systemd_unit`, `collect_diagnostics`,

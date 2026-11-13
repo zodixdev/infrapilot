@@ -33,7 +33,7 @@ Status values: `not started` · `in progress` · `done`. Update this file when a
 - `make up PROFILE=core,obs` brings those dependencies healthy; `make cluster deploy` installs a test chart built from the library chart and passes `helm test`; its traces/metrics appear in Tempo/Prometheus.
 - `pkg/` integration tests prove: graceful shutdown drains in-flight HTTP/gRPC work within the deadline; `WithTx` rolls back on error/panic and sets `app.org_id`; readiness flips to false on dependency loss.
 
-## M02 — Identity, control plane, gateway · status: not started
+## M02 — Identity, control plane, gateway · status: in progress
 
 **Scope:** Keycloak realm as code; control-plane (orgs, projects, memberships, roles, resources, API keys,
 `CheckPermission` gRPC) with RLS; api-gateway (JWT/JWKS, API keys, Redis rate limiting, routing, problem+json,

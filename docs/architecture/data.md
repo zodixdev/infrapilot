@@ -5,6 +5,7 @@
 | Dataset | Owner | Store | Source of truth | Retention | Consistency |
 |---|---|---|---|---|---|
 | Orgs, projects, members, roles, API keys, resources | control-plane | PostgreSQL `controlplane` | yes | until deleted (+30d soft delete) | strong (tx) |
+| Control-plane audit events, idempotency records | control-plane | PostgreSQL `controlplane` | yes | audit 400d (append-only), idempotency 24h — ADR-0027 | strong (tx) |
 | Check definitions, leases, last state | check-runner | PostgreSQL `checks` | yes | until deleted | strong |
 | Check results (raw) | stream-processor | TimescaleDB `check_results` hypertable | yes | 7d raw, 90d 5-min rollups | eventual (≤10 s) |
 | Host & app metrics | stream-processor | TimescaleDB `metrics` hypertable | yes | 7d raw, 30d 1-min, 400d 1-h rollups | eventual |
@@ -29,6 +30,8 @@ Other services get data only through gRPC or events.
   transaction with `set_config('app.org_id', $1, true)` by `pkg/postgres.WithTx`. The runtime role neither owns
   tables nor bypasses RLS. The predicate is index-usable (`Index Cond` on `(organization_id, …)` indexes), so queries
   need not repeat it for performance; repeating `organization_id = $1` is still encouraged for readability.
+- A second, read-only policy dimension `app.user_id` (`WithUserTx`) exists only on `organizations` and `memberships`
+  to list a user's organizations in one query (ADR-0023).
 - Unique constraints and foreign keys on tenant tables include `organization_id`; views use `security_invoker`.
   `pgtest.AssertTenantSchema` enforces both in every service's integration suite (ADR-0018).
 - TimescaleDB/ClickHouse queries go only through query-service, which injects `organization_id` filters

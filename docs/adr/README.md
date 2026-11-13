@@ -27,5 +27,11 @@ and list it in the milestone report so the owner can review it later.
 | [0019](0019-self-telemetry-wiring.md) | Self-telemetry wiring: metrics pulled from /metrics, traces pushed over OTLP (refines 0012) |
 | [0020](0020-openapi-document-version.md) | Public OpenAPI document stays on 3.0.3 until the generator proves 3.1 support (partially supersedes 0003) |
 | [0021](0021-tool-pinning.md) | Toolchain pinned with Go `tool` directives + Brewfile |
+| [0022](0022-rbac-and-authorization.md) | RBAC matrix, API-key scopes; owning service authoritative, gateway pre-check cached (refines 0009) |
+| [0023](0023-user-scoped-read-context.md) | Second RLS dimension `app.user_id` + `WithUserTx` for "my organizations" (extends 0018) |
+| [0024](0024-idempotency-keys.md) | `Idempotency-Key` enforced by the owning service in the creating transaction (refines 0003) |
+| [0025](0025-service-identity.md) | mTLS SPIFFE-style identities, per-RPC peer allow-list, principal accepted only from the edge (refines 0009) |
+| [0026](0026-gateway-edge.md) | Gateway JWKS cache, API-key/permission caches, GCRA rate limiting failing open |
+| [0027](0027-control-plane-retention.md) | Soft delete + purge CronJob under the batch role; retention per table |
 
 Template: [0000-template.md](0000-template.md)
