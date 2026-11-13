@@ -19,16 +19,15 @@ service OrganizationService {
 
 message Organization {
   string id = 1;
+  // Display name, 1–200 characters. Organizations are addressed by id; names need not be unique (a global
+  // unique handle would reveal other tenants' handles through conflicts).
   string name = 2;
-  // URL-safe unique handle: lowercase letters, digits and hyphens, 3–63 characters.
-  string slug = 3;
-  google.protobuf.Timestamp create_time = 4;
-  google.protobuf.Timestamp update_time = 5;
+  google.protobuf.Timestamp create_time = 3;
+  google.protobuf.Timestamp update_time = 4;
 }
 
 message CreateOrganizationRequest {
   string name = 1;
-  string slug = 2;
 }
 
 message CreateOrganizationResponse {
@@ -62,7 +61,6 @@ message UpdateOrganizationRequest {
   string organization_id = 1;
   // Fields left unset are not changed.
   optional string name = 2;
-  optional string slug = 3;
 }
 
 message UpdateOrganizationResponse {

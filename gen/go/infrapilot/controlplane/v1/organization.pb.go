@@ -25,11 +25,11 @@ const (
 type Organization struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name  string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	// URL-safe unique handle: lowercase letters, digits and hyphens, 3–63 characters.
-	Slug          string                 `protobuf:"bytes,3,opt,name=slug,proto3" json:"slug,omitempty"`
-	CreateTime    *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
-	UpdateTime    *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=update_time,json=updateTime,proto3" json:"update_time,omitempty"`
+	// Display name, 1–200 characters. Organizations are addressed by id; names need not be unique (a global
+	// unique handle would reveal other tenants' handles through conflicts).
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	CreateTime    *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
+	UpdateTime    *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=update_time,json=updateTime,proto3" json:"update_time,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -78,13 +78,6 @@ func (x *Organization) GetName() string {
 	return ""
 }
 
-func (x *Organization) GetSlug() string {
-	if x != nil {
-		return x.Slug
-	}
-	return ""
-}
-
 func (x *Organization) GetCreateTime() *timestamppb.Timestamp {
 	if x != nil {
 		return x.CreateTime
@@ -102,7 +95,6 @@ func (x *Organization) GetUpdateTime() *timestamppb.Timestamp {
 type CreateOrganizationRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Slug          string                 `protobuf:"bytes,2,opt,name=slug,proto3" json:"slug,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -140,13 +132,6 @@ func (*CreateOrganizationRequest) Descriptor() ([]byte, []int) {
 func (x *CreateOrganizationRequest) GetName() string {
 	if x != nil {
 		return x.Name
-	}
-	return ""
-}
-
-func (x *CreateOrganizationRequest) GetSlug() string {
-	if x != nil {
-		return x.Slug
 	}
 	return ""
 }
@@ -444,7 +429,6 @@ type UpdateOrganizationRequest struct {
 	OrganizationId string                 `protobuf:"bytes,1,opt,name=organization_id,json=organizationId,proto3" json:"organization_id,omitempty"`
 	// Fields left unset are not changed.
 	Name          *string `protobuf:"bytes,2,opt,name=name,proto3,oneof" json:"name,omitempty"`
-	Slug          *string `protobuf:"bytes,3,opt,name=slug,proto3,oneof" json:"slug,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -489,13 +473,6 @@ func (x *UpdateOrganizationRequest) GetOrganizationId() string {
 func (x *UpdateOrganizationRequest) GetName() string {
 	if x != nil && x.Name != nil {
 		return *x.Name
-	}
-	return ""
-}
-
-func (x *UpdateOrganizationRequest) GetSlug() string {
-	if x != nil && x.Slug != nil {
-		return *x.Slug
 	}
 	return ""
 }
@@ -628,18 +605,16 @@ var File_infrapilot_controlplane_v1_organization_proto protoreflect.FileDescript
 
 const file_infrapilot_controlplane_v1_organization_proto_rawDesc = "" +
 	"\n" +
-	"-infrapilot/controlplane/v1/organization.proto\x12\x1ainfrapilot.controlplane.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a'infrapilot/controlplane/v1/common.proto\"\xc0\x01\n" +
+	"-infrapilot/controlplane/v1/organization.proto\x12\x1ainfrapilot.controlplane.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a'infrapilot/controlplane/v1/common.proto\"\xac\x01\n" +
 	"\fOrganization\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
-	"\x04slug\x18\x03 \x01(\tR\x04slug\x12;\n" +
-	"\vcreate_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12;\n" +
+	"\vcreate_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"createTime\x12;\n" +
-	"\vupdate_time\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"updateTime\"C\n" +
+	"\vupdate_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"updateTime\"/\n" +
 	"\x19CreateOrganizationRequest\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
-	"\x04slug\x18\x02 \x01(\tR\x04slug\"j\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\"j\n" +
 	"\x1aCreateOrganizationResponse\x12L\n" +
 	"\forganization\x18\x01 \x01(\v2(.infrapilot.controlplane.v1.OrganizationR\forganization\"A\n" +
 	"\x16GetOrganizationRequest\x12'\n" +
@@ -655,13 +630,11 @@ const file_infrapilot_controlplane_v1_organization_proto_rawDesc = "" +
 	"\x04role\x18\x02 \x01(\x0e2 .infrapilot.controlplane.v1.RoleR\x04role\"\x9d\x01\n" +
 	"\x1bListMyOrganizationsResponse\x12V\n" +
 	"\rorganizations\x18\x01 \x03(\v20.infrapilot.controlplane.v1.OrganizationWithRoleR\rorganizations\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\x88\x01\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"f\n" +
 	"\x19UpdateOrganizationRequest\x12'\n" +
 	"\x0forganization_id\x18\x01 \x01(\tR\x0eorganizationId\x12\x17\n" +
-	"\x04name\x18\x02 \x01(\tH\x00R\x04name\x88\x01\x01\x12\x17\n" +
-	"\x04slug\x18\x03 \x01(\tH\x01R\x04slug\x88\x01\x01B\a\n" +
-	"\x05_nameB\a\n" +
-	"\x05_slug\"j\n" +
+	"\x04name\x18\x02 \x01(\tH\x00R\x04name\x88\x01\x01B\a\n" +
+	"\x05_name\"j\n" +
 	"\x1aUpdateOrganizationResponse\x12L\n" +
 	"\forganization\x18\x01 \x01(\v2(.infrapilot.controlplane.v1.OrganizationR\forganization\"D\n" +
 	"\x19DeleteOrganizationRequest\x12'\n" +

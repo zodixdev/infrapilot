@@ -18,7 +18,8 @@ message Project {
   string id = 1;
   string organization_id = 2;
   string name = 3;
-  // Unique within the organization; same rules as organization slugs.
+  // URL-safe handle unique within the organization: lowercase letters, digits and hyphens, 3–63 characters,
+  // starting with a letter and not ending with a hyphen.
   string slug = 4;
   string description = 5;
   google.protobuf.Timestamp create_time = 6;
