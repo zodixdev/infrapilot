@@ -336,10 +336,10 @@ func TestLibChart_CronJobsAreHardenedAndIsolated(t *testing.T) {
 	objs := render(t, "--set", "cronJobs[0].name=purge", "--set", "cronJobs[0].schedule=17 * * * *", "--set", "cronJobs[0].args[0]=purge")
 	cj := find(t, objs, "CronJob", "conformance-purge")
 	require.Equal(t, "Forbid", cj.Spec["concurrencyPolicy"])
-	pod := dig(t, cj.Spec, "jobTemplate", "spec", "template", "spec").(map[string]any)
+	pod := as[map[string]any](t, dig(t, cj.Spec, "jobTemplate", "spec", "template", "spec"))
 	require.Equal(t, false, pod["automountServiceAccountToken"])
 	require.Equal(t, true, dig(t, pod, "securityContext", "runAsNonRoot"))
-	c := pod["containers"].([]any)[0].(map[string]any)
+	c := as[map[string]any](t, as[[]any](t, pod["containers"])[0])
 	require.Equal(t, true, dig(t, c, "securityContext", "readOnlyRootFilesystem"))
 	require.Equal(t, []any{"purge"}, c["args"])
 	np := find(t, objs, "NetworkPolicy", "conformance-purge")
@@ -349,12 +349,12 @@ func TestLibChart_CronJobsAreHardenedAndIsolated(t *testing.T) {
 
 func containerEnv(t *testing.T, o object) map[string]string {
 	t.Helper()
-	c := podSpec(t, o)["containers"].([]any)[0].(map[string]any)
+	c := as[map[string]any](t, as[[]any](t, podSpec(t, o)["containers"])[0])
 	out := map[string]string{}
-	for _, e := range c["env"].([]any) {
-		m := e.(map[string]any)
+	for _, e := range as[[]any](t, c["env"]) {
+		m := as[map[string]any](t, e)
 		if v, ok := m["value"].(string); ok {
-			out[m["name"].(string)] = v
+			out[as[string](t, m["name"])] = v
 		}
 	}
 	return out
