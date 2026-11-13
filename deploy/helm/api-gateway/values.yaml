@@ -1,5 +1,6 @@
 # api-gateway values. Environment-specific files set environment, image, OIDC URLs, Redis and egress.
-# Secrets are never set here: the Secret api-gateway-redis (key password) is created by the platform.
+# Secrets are never set here: the Secrets api-gateway-redis (key password) and api-gateway-cache (key signing-key,
+# at least 32 random bytes) are created by the platform.
 environment: ""
 image:
   repository: infrapilot/api-gateway
@@ -28,6 +29,11 @@ env:
     value: https://auth.infrapilot.example.com/realms/infrapilot
   - name: OIDC_JWKS_URL
     value: https://auth.infrapilot.example.com/realms/infrapilot/protocol/openid-connect/certs
+  - name: OIDC_AUTHORIZED_PARTIES
+    value: infrapilot-dashboard
+  - name: CACHE_SIGNING_KEY
+    valueFrom:
+      secretKeyRef: {name: api-gateway-cache, key: signing-key}
   - name: REDIS_ADDR
     value: redis:6379
   - name: REDIS_TLS
@@ -51,9 +57,10 @@ env:
     value: "true"
   - name: CORS_ALLOWED_ORIGINS
     value: https://app.infrapilot.example.com
-  # Ingress controller pods; their X-Forwarded-For is trusted for client-IP rate limiting.
+  # Set per environment to the ingress controller pods' CIDR (their X-Forwarded-For is trusted for client-IP
+  # rate limiting). Empty: only the TCP peer address counts.
   - name: TRUSTED_PROXIES
-    value: 10.0.0.0/8
+    value: ""
 networkPolicy:
   ingress:
     - namespaceSelector:

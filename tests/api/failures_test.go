@@ -4,6 +4,7 @@ package api_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os/exec"
 	"testing"
@@ -21,7 +22,7 @@ func dockerVerb(t *testing.T, verb, id string) {
 // TestF03_RedisUnavailable_Integration: rate limiting fails open with a metric, API keys and permission
 // decisions are resolved through control-plane, latency stays bounded, and limiting resumes after recovery.
 func TestF03_RedisUnavailable_Integration(t *testing.T) {
-	s := startStack(t, stackOptions{anonymousRPS: "1", anonymousBurst: "3"})
+	s := startStack(t, stackOptions{anonymousRPS: "1", anonymousBurst: "3", orgCreateRPS: "0.01", orgCreateBurst: "2", authFailureRPS: "0.1", authFailureBurst: "5"})
 	w := newWorld(t, s)
 	org := "/organizations/" + w.org
 
@@ -36,6 +37,24 @@ func TestF03_RedisUnavailable_Integration(t *testing.T) {
 		require.Equal(t, http.StatusTooManyRequests, limited.status, "anonymous burst of 3 must be enforced")
 		require.Equal(t, "rate_limited", limited.problemCode(t))
 		require.NotEmpty(t, limited.header.Get("Retry-After"))
+	})
+
+	t.Run("sensitive operations have their own budget", func(t *testing.T) {
+		u := s.user(t, "creator")
+		codes := make([]int, 0, 4)
+		for i := range 4 {
+			codes = append(codes, s.call(t, u.cred(), http.MethodPost, "/organizations", map[string]any{"name": fmt.Sprintf("o%d", i)}).status)
+		}
+		require.Equal(t, []int{http.StatusCreated, http.StatusCreated, http.StatusTooManyRequests, http.StatusTooManyRequests}, codes)
+	})
+
+	t.Run("credential guessing exhausts a per-client budget before any lookup", func(t *testing.T) {
+		var last response
+		for i := range 8 {
+			last = s.call(t, key(fmt.Sprintf("ipk_%043d", i)), http.MethodGet, org, nil)
+		}
+		require.Equal(t, http.StatusTooManyRequests, last.status, "after the failure budget the client is refused outright")
+		require.NotEmpty(t, last.header.Get("Retry-After"))
 	})
 
 	dockerVerb(t, "pause", s.redis.GetContainerID())

@@ -545,12 +545,13 @@ components:
     IdempotencyKey:
       name: Idempotency-Key
       in: header
-      description: Client-generated unique key (UUID recommended) making a create request safe to retry for 24 h.
+      description: Client-generated unique key (UUID recommended) making a create request safe to retry for 24 h. Printable ASCII only.
       required: false
       schema:
         type: string
         minLength: 1
         maxLength: 128
+        pattern: "^[\\x21-\\x7E]+$"
   headers:
     RateLimitLimit:
       description: Request quota for the current window.

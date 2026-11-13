@@ -89,6 +89,10 @@ func TestAPI_Functional_Integration(t *testing.T) {
 	t.Run("CrossTenant", func(t *testing.T) { testCrossTenant(t, w) })
 	t.Run("Contract", func(t *testing.T) { testContract(t, w) })
 	t.Run("Audit", func(t *testing.T) { testAudit(t, w) })
+	t.Run("EdgePreAuthorizationRuns", func(t *testing.T) {
+		require.Positive(t, s.metric(t, "gateway_cache_requests_total", `cache="authz"`),
+			"org-scoped routes are pre-authorized at the edge, not only by control-plane")
+	})
 }
 
 func testCRUD(t *testing.T, w *world) {

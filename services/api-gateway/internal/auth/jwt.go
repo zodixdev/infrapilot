@@ -31,6 +31,11 @@ type Identity struct {
 type VerifierConfig struct {
 	Issuer   string
 	Audience string
+	// AuthorizedParties are the OAuth clients ("azp") whose tokens the API accepts; tokens issued to any other
+	// realm client are refused even if they carry the audience.
+	AuthorizedParties []string
+	// MaxLifetime bounds exp - iat (default 1 h; Keycloak issues 5-minute access tokens).
+	MaxLifetime time.Duration
 	// Leeway tolerated on exp/nbf/iat (default 30 s).
 	Leeway time.Duration
 }
@@ -44,8 +49,11 @@ type Verifier struct {
 
 // NewVerifier returns a verifier over keys.
 func NewVerifier(cfg VerifierConfig, keys *KeySet) (*Verifier, error) {
-	if cfg.Issuer == "" || cfg.Audience == "" {
-		return nil, errors.New("auth: issuer and audience are required")
+	if cfg.Issuer == "" || cfg.Audience == "" || len(cfg.AuthorizedParties) == 0 {
+		return nil, errors.New("auth: issuer, audience and authorized parties are required")
+	}
+	if cfg.MaxLifetime <= 0 {
+		cfg.MaxLifetime = time.Hour
 	}
 	if cfg.Leeway <= 0 {
 		cfg.Leeway = 30 * time.Second
@@ -55,6 +63,7 @@ func NewVerifier(cfg VerifierConfig, keys *KeySet) (*Verifier, error) {
 
 type accessClaims struct {
 	Type              string `json:"typ"`
+	AuthorizedParty   string `json:"azp"`
 	Email             string `json:"email"`
 	EmailVerified     bool   `json:"email_verified"`
 	Name              string `json:"name"`
@@ -83,7 +92,11 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 	if err := tok.Claims(key.Key, &std, &extra); err != nil {
 		return Identity{}, ErrInvalidToken
 	}
-	if std.Expiry == nil || std.Subject == "" {
+	if std.Expiry == nil || std.IssuedAt == nil || std.Subject == "" ||
+		std.Expiry.Time().Sub(std.IssuedAt.Time()) > v.cfg.MaxLifetime {
+		return Identity{}, ErrInvalidToken
+	}
+	if !slices.Contains(v.cfg.AuthorizedParties, extra.AuthorizedParty) {
 		return Identity{}, ErrInvalidToken
 	}
 	if err := std.ValidateWithLeeway(jwt.Expected{Issuer: v.cfg.Issuer, AnyAudience: jwt.Audience{v.cfg.Audience}, Time: v.now()}, v.cfg.Leeway); err != nil {

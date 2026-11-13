@@ -71,6 +71,7 @@ func (p *idp) setDown(down bool) {
 type claims struct {
 	jwt.Claims
 	Type          string `json:"typ,omitempty"`
+	AZP           string `json:"azp,omitempty"`
 	Email         string `json:"email,omitempty"`
 	EmailVerified bool   `json:"email_verified,omitempty"`
 	Name          string `json:"name,omitempty"`
@@ -80,7 +81,7 @@ func validClaims() claims {
 	now := time.Now()
 	return claims{Claims: jwt.Claims{Issuer: issuer, Subject: "user-1", Audience: jwt.Audience{"account", audience},
 		Expiry: jwt.NewNumericDate(now.Add(5 * time.Minute)), IssuedAt: jwt.NewNumericDate(now)},
-		Type: "Bearer", Email: "alice@example.com", EmailVerified: true, Name: "Alice"}
+		Type: "Bearer", AZP: "infrapilot-dashboard", Email: "alice@example.com", EmailVerified: true, Name: "Alice"}
 }
 
 func sign(t *testing.T, alg jose.SignatureAlgorithm, key any, kid string, c claims) string {
@@ -96,7 +97,7 @@ func verifier(t *testing.T, p *idp, gap time.Duration) (*auth.Verifier, *auth.Ke
 	t.Helper()
 	ks, err := auth.NewKeySet(auth.KeySetConfig{URL: p.srv.URL, MinRefreshGap: gap}, p.srv.Client(), slog.New(slog.DiscardHandler), noop.NewMeterProvider().Meter("t"))
 	require.NoError(t, err)
-	v, err := auth.NewVerifier(auth.VerifierConfig{Issuer: issuer, Audience: audience}, ks)
+	v, err := auth.NewVerifier(auth.VerifierConfig{Issuer: issuer, Audience: audience, AuthorizedParties: []string{"infrapilot-dashboard"}}, ks)
 	require.NoError(t, err)
 	return v, ks
 }

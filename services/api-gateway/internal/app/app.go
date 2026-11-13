@@ -91,21 +91,31 @@ func Serve(ctx context.Context, cfg *Config, logCfg log.Config, logger *slog.Log
 	}
 	cleanup = append(cleanup, func(context.Context) error { return cpConn.Close() })
 
-	jwksClient := &http.Client{Timeout: 10 * time.Second, Transport: otelhttp.NewTransport(http.DefaultTransport, otelhttp.WithTracerProvider(tel.TracerProvider()))}
+	jwksClient := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: otelhttp.NewTransport(http.DefaultTransport, otelhttp.WithTracerProvider(tel.TracerProvider())),
+		// The JWKS URL is configuration; a redirect elsewhere is never followed.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	keys, err := auth.NewKeySet(auth.KeySetConfig{URL: cfg.OIDC.JWKSURL}, jwksClient, logger, meter)
 	if err != nil {
 		return err
 	}
-	verifier, err := auth.NewVerifier(auth.VerifierConfig{Issuer: cfg.OIDC.Issuer, Audience: cfg.OIDC.Audience}, keys)
+	verifier, err := auth.NewVerifier(auth.VerifierConfig{Issuer: cfg.OIDC.Issuer, Audience: cfg.OIDC.Audience,
+		AuthorizedParties: cfg.OIDC.AuthorizedParties}, keys)
+	if err != nil {
+		return err
+	}
+	signed, err := redisx.NewSignedCache(store, []byte(cfg.CacheSigningKey))
 	if err != nil {
 		return err
 	}
 	authzClient := cpv1.NewAuthorizationServiceClient(cpConn)
-	keyResolver, err := auth.NewKeyResolver(store, authzClient, meter)
+	keyResolver, err := auth.NewKeyResolver(signed, authzClient, meter)
 	if err != nil {
 		return err
 	}
-	authorizer, err := authz.New(store, authzClient, meter)
+	authorizer, err := authz.New(signed, authzClient, meter)
 	if err != nil {
 		return err
 	}
@@ -116,17 +126,20 @@ func Serve(ctx context.Context, cfg *Config, logCfg log.Config, logger *slog.Log
 	rl := cfg.RateLimit
 	apiHandler, err := gwhttp.NewHandler(gwhttp.Deps{
 		Verifier: verifier, Keys: keyResolver, Authorizer: authorizer, Store: store, CORSOrigins: cfg.CORSAllowedOrigins,
-		Logger: logger, Meter: meter,
+		UpstreamTimeout: cfg.UpstreamTimeout,
+		Logger:          logger, Meter: meter,
 		Limits: gwhttp.Limits{
-			User:      gwhttp.RateRule{Rate: rl.UserRPS, Burst: rl.UserBurst},
-			APIKey:    gwhttp.RateRule{Rate: rl.APIKeyRPS, Burst: rl.APIKeyBurst},
-			Anonymous: gwhttp.RateRule{Rate: rl.AnonymousRPS, Burst: rl.AnonymousBurst},
+			User:        gwhttp.RateRule{Rate: rl.UserRPS, Burst: rl.UserBurst},
+			APIKey:      gwhttp.RateRule{Rate: rl.APIKeyRPS, Burst: rl.APIKeyBurst},
+			Anonymous:   gwhttp.RateRule{Rate: rl.AnonymousRPS, Burst: rl.AnonymousBurst},
+			AuthFailure: gwhttp.RateRule{Rate: rl.AuthFailureRPS, Burst: rl.AuthFailureBurst},
+			// Keyed by generated operation name (operationId with an upper-case first letter).
 			Operations: map[string]gwhttp.RateRule{
-				"addMember":          {Rate: rl.MemberChangeRPS, Burst: rl.MemberChangeBurst},
-				"updateMemberRole":   {Rate: rl.MemberChangeRPS, Burst: rl.MemberChangeBurst},
-				"removeMember":       {Rate: rl.MemberChangeRPS, Burst: rl.MemberChangeBurst},
-				"createOrganization": {Rate: rl.OrgCreateRPS, Burst: rl.OrgCreateBurst},
-				"createApiKey":       {Rate: rl.KeyCreateRPS, Burst: rl.KeyCreateBurst},
+				"AddMember":          {Rate: rl.MemberChangeRPS, Burst: rl.MemberChangeBurst},
+				"UpdateMemberRole":   {Rate: rl.MemberChangeRPS, Burst: rl.MemberChangeBurst},
+				"RemoveMember":       {Rate: rl.MemberChangeRPS, Burst: rl.MemberChangeBurst},
+				"CreateOrganization": {Rate: rl.OrgCreateRPS, Burst: rl.OrgCreateBurst},
+				"CreateApiKey":       {Rate: rl.KeyCreateRPS, Burst: rl.KeyCreateBurst},
 			},
 			TrustedProxies: proxies,
 		},

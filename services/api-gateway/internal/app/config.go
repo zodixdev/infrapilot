@@ -20,8 +20,12 @@ type Config struct {
 		// JWKSURL is fetched by the gateway (an in-cluster address may differ from the issuer's host).
 		JWKSURL  string `env:"JWKS_URL"`
 		Audience string `env:"AUDIENCE" envDefault:"infrapilot-api"`
+		// AuthorizedParties are the OAuth clients ("azp") whose access tokens are accepted.
+		AuthorizedParties []string `env:"AUTHORIZED_PARTIES" envSeparator:"," envDefault:"infrapilot-dashboard"`
 	} `envPrefix:"OIDC_"`
-	Redis struct {
+	// CacheSigningKey authenticates values the gateway caches in Redis (at least 32 bytes; a Secret).
+	CacheSigningKey string `env:"CACHE_SIGNING_KEY"`
+	Redis           struct {
 		Addr     string `env:"ADDR"`
 		Username string `env:"USERNAME" envDefault:""`
 		Password string `env:"PASSWORD" envDefault:""`
@@ -46,6 +50,9 @@ type Config struct {
 		OrgCreateBurst    int     `env:"ORG_CREATE_BURST" envDefault:"5"`
 		KeyCreateRPS      float64 `env:"KEY_CREATE_RPS" envDefault:"0.2"`
 		KeyCreateBurst    int     `env:"KEY_CREATE_BURST" envDefault:"10"`
+		// Failed authentications per client IP (credential guessing).
+		AuthFailureRPS   float64 `env:"AUTH_FAILURE_RPS" envDefault:"1"`
+		AuthFailureBurst int     `env:"AUTH_FAILURE_BURST" envDefault:"20"`
 	} `envPrefix:"RATE_LIMIT_"`
 	// UpstreamTimeout bounds each call to an internal service.
 	UpstreamTimeout time.Duration `env:"UPSTREAM_TIMEOUT" envDefault:"5s"`
@@ -67,11 +74,20 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.OIDC.Audience) == "" {
 		errs = append(errs, errors.New("OIDC_AUDIENCE must not be empty"))
 	}
+	if len(c.OIDC.AuthorizedParties) == 0 {
+		errs = append(errs, errors.New("OIDC_AUTHORIZED_PARTIES must list at least one client"))
+	}
+	if len(c.CacheSigningKey) < 32 {
+		errs = append(errs, errors.New("CACHE_SIGNING_KEY must have at least 32 bytes"))
+	}
 	if c.Redis.Addr == "" {
 		errs = append(errs, errors.New("REDIS_ADDR is required"))
 	}
 	if (c.Environment == config.EnvProd || c.Environment == config.EnvStaging) && !c.Redis.TLS {
 		errs = append(errs, fmt.Errorf("REDIS_TLS is required in %s", c.Environment))
+	}
+	if (c.Environment == config.EnvProd || c.Environment == config.EnvStaging) && c.Redis.Password == "" {
+		errs = append(errs, fmt.Errorf("REDIS_PASSWORD is required in %s (shared Redis must authenticate the gateway)", c.Environment))
 	}
 	if err := c.ControlPlane.ValidateFor(c.Environment); err != nil {
 		errs = append(errs, fmt.Errorf("CONTROLPLANE_*: %w", err))
@@ -89,6 +105,7 @@ func (c *Config) Validate() error {
 		"user": r.UserRPS > 0 && r.UserBurst > 0, "api key": r.APIKeyRPS > 0 && r.APIKeyBurst > 0,
 		"anonymous": r.AnonymousRPS > 0 && r.AnonymousBurst > 0, "member change": r.MemberChangeRPS > 0 && r.MemberChangeBurst > 0,
 		"org create": r.OrgCreateRPS > 0 && r.OrgCreateBurst > 0, "key create": r.KeyCreateRPS > 0 && r.KeyCreateBurst > 0,
+		"auth failure": r.AuthFailureRPS > 0 && r.AuthFailureBurst > 0,
 	} {
 		if !ok {
 			errs = append(errs, fmt.Errorf("RATE_LIMIT_* %s rate and burst must be positive", name))

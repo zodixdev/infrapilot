@@ -51,7 +51,8 @@ func toStatus(ctx context.Context, logger *slog.Logger, err error) error {
 	case errors.Is(err, domain.ErrNotFound):
 		return status.Error(codes.NotFound, safeMessage(err, domain.ErrNotFound))
 	case errors.Is(err, domain.ErrPermissionDenied):
-		return status.Error(codes.PermissionDenied, safeMessage(err, domain.ErrPermissionDenied))
+		// Fixed text: the domain message names roles and permissions, which callers have no need to learn.
+		return status.Error(codes.PermissionDenied, "insufficient permissions")
 	case errors.Is(err, domain.ErrUnauthenticated):
 		return status.Error(codes.Unauthenticated, "authentication required")
 	case errors.Is(err, domain.ErrConflict):

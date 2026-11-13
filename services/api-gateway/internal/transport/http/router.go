@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -27,9 +28,11 @@ type Deps struct {
 	Store       *redisx.Store
 	Limits      Limits
 	CORSOrigins []string
-	Upstreams   Upstreams
-	Logger      *slog.Logger
-	Meter       metric.Meter
+	// UpstreamTimeout bounds edge pre-authorization calls.
+	UpstreamTimeout time.Duration
+	Upstreams       Upstreams
+	Logger          *slog.Logger
+	Meter           metric.Meter
 }
 
 // BasePath of every public route (ADR-0003: versioned by path).
@@ -55,7 +58,7 @@ func NewHandler(d Deps) (http.Handler, error) {
 	}
 	onUpstream := upstreamError(d.Logger)
 	strict := api.NewStrictHandlerWithOptions(NewHandlers(d.Upstreams),
-		[]api.StrictMiddlewareFunc{operationPolicy(d.Authorizer, lim)},
+		[]api.StrictMiddlewareFunc{operationPolicy(d.Authorizer, lim, d.UpstreamTimeout)},
 		api.StrictHTTPServerOptions{
 			RequestErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, _ error) {
 				httpserver.WriteProblemBody(w, r, httpserver.Problem{Status: http.StatusBadRequest, Code: codeValidation, Title: "malformed request body"})
@@ -75,7 +78,7 @@ func NewHandler(d Deps) (http.Handler, error) {
 			httpserver.WriteProblemBody(w, r, httpserver.Problem{Status: http.StatusBadRequest, Code: codeValidation, Title: "invalid parameter"})
 		},
 	})
-	return httpserver.Chain(mux, cors(d.CORSOrigins), authenticate(d.Verifier, d.Keys, d.Logger), lim.middleware, validator), nil
+	return httpserver.Chain(mux, cors(d.CORSOrigins), authenticate(d.Verifier, d.Keys, lim, d.Logger), lim.middleware, validator), nil
 }
 
 // newValidator builds the OpenAPI request validator; the library panics on an unroutable document, which is

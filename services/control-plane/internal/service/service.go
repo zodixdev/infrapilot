@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/zodixdev/infrapilot/pkg/postgres"
 	"github.com/zodixdev/infrapilot/services/control-plane/internal/domain"
@@ -29,10 +31,11 @@ import (
 
 // Service implements the use cases. It is safe for concurrent use.
 type Service struct {
-	pool  *postgres.Pool
-	log   *slog.Logger
-	now   func() time.Time
-	users *userCache
+	pool    *postgres.Pool
+	log     *slog.Logger
+	now     func() time.Time
+	users   *userCache
+	upserts singleflight.Group
 }
 
 // Option configures the service.
@@ -110,6 +113,20 @@ func (s *Service) ResolveActor(ctx context.Context, p Principal) (Actor, error) 
 	if id, ok := s.users.get(p, s.now()); ok {
 		return Actor{Kind: domain.ActorUser, ID: id}, nil
 	}
+	// Concurrent first requests of the same user share one upsert.
+	v, err, _ := s.upserts.Do(p.Subject+"\x00"+p.Email+"\x00"+p.DisplayName+"\x00"+strconv.FormatBool(p.EmailVerified), func() (any, error) {
+		// Detached from the first caller's cancellation so the other waiters are not failed by it; the runtime role's
+		// server-side statement timeout still bounds the transaction (ADR-0018).
+		return s.upsertUser(context.WithoutCancel(ctx), p)
+	})
+	if err != nil {
+		return Actor{}, err
+	}
+	id, _ := v.(uuid.UUID)
+	return Actor{Kind: domain.ActorUser, ID: id}, nil
+}
+
+func (s *Service) upsertUser(ctx context.Context, p Principal) (uuid.UUID, error) {
 	// Identity-provider claims are untrusted text shown in member lists and audit output: keep printable
 	// characters only and bound the length.
 	email, name := truncate(printable(p.Email), domain.MaxEmailLen), truncate(printable(p.DisplayName), domain.MaxNameLen)
@@ -121,10 +138,10 @@ func (s *Service) ResolveActor(ctx context.Context, p Principal) (Actor, error) 
 		return err
 	})
 	if err != nil {
-		return Actor{}, fmt.Errorf("resolve user: %w", err)
+		return uuid.Nil, fmt.Errorf("resolve user: %w", err)
 	}
 	s.users.put(p, id, s.now())
-	return Actor{Kind: domain.ActorUser, ID: id}, nil
+	return id, nil
 }
 
 // printable drops control and format characters (incl. bidi overrides) and invalid UTF-8.
@@ -300,7 +317,9 @@ func createIdempotent[T any](ctx context.Context, s *Service, org uuid.UUID, a A
 		})
 	}
 	err := attempt()
-	if idem != nil && isUniqueViolation(err) {
+	// Only a lost race on the dedup record itself (or on the id derived from it) takes the replay path; any other
+	// conflict is the caller's (e.g. a duplicate slug) and is returned as is.
+	if c := constraint(err); idem != nil && isUniqueViolation(err) && (c == "idempotency_keys_pkey" || c == "organizations_pkey") {
 		err = attempt()
 	}
 	return out, err
@@ -365,7 +384,16 @@ func (c *userCache) put(p Principal, id uuid.UUID, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.entries) >= c.max {
-		clear(c.entries) // bounded memory; refills from the database at one upsert per user
+		// Bounded memory: drop about a tenth (map iteration order is random enough for eviction) instead of
+		// emptying the cache, which would send every active user back to the database at once.
+		n := c.max / 10
+		for k := range c.entries {
+			if n <= 0 {
+				break
+			}
+			delete(c.entries, k)
+			n--
+		}
 	}
 	c.entries[p.Subject] = userEntry{id: id, email: p.Email, name: p.DisplayName, verified: p.EmailVerified, at: now}
 }

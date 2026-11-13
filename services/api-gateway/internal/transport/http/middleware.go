@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3filter"
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
@@ -33,13 +34,18 @@ func cors(origins []string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			origin := r.Header.Get("Origin")
-			if origin == "" || !slices.Contains(origins, origin) {
+			if origin == "" {
 				next.ServeHTTP(w, r)
 				return
 			}
+			// Responses differ by origin whether or not it is allowed; shared caches must key on it.
 			h := w.Header()
-			h.Set("Access-Control-Allow-Origin", origin)
 			h.Add("Vary", "Origin")
+			if !slices.Contains(origins, origin) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			h.Set("Access-Control-Allow-Origin", origin)
 			h.Set("Access-Control-Expose-Headers", "RateLimit-Limit, RateLimit-Remaining, Retry-After, X-Request-Id")
 			if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 				h.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE")
@@ -54,8 +60,10 @@ func cors(origins []string) func(http.Handler) http.Handler {
 }
 
 // authenticate resolves presented credentials into a principal. Requests without credentials pass through
-// anonymous; whether an operation requires a credential is decided by the contract (validator).
-func authenticate(v *auth.Verifier, keys *auth.KeyResolver, logger *slog.Logger) func(http.Handler) http.Handler {
+// anonymous; whether an operation requires a credential is decided by the contract (validator). Every failed
+// authentication is charged to a per-client-IP budget, and a client that exhausted it is refused before any
+// credential work (signature checks, control-plane lookups) is done.
+func authenticate(v *auth.Verifier, keys *auth.KeyResolver, lim *limiter, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			bearer, apiKey := r.Header.Get("Authorization"), r.Header.Get("X-API-Key")
@@ -63,7 +71,12 @@ func authenticate(v *auth.Verifier, keys *auth.KeyResolver, logger *slog.Logger)
 				next.ServeHTTP(w, r)
 				return
 			}
+			failBucket := "authfail:ip:" + clientIP(r, lim.limits.TrustedProxies)
+			if !lim.admitAuthAttempt(w, r, failBucket) {
+				return
+			}
 			if (bearer != "" && apiKey != "") || len(bearer) > maxCredentialBytes || len(apiKey) > maxCredentialBytes {
+				lim.chargeAuthFailure(r, failBucket)
 				unauthorized(w, r)
 				return
 			}
@@ -74,6 +87,7 @@ func authenticate(v *auth.Verifier, keys *auth.KeyResolver, logger *slog.Logger)
 			} else {
 				scheme, token, ok := strings.Cut(bearer, " ")
 				if !ok || !strings.EqualFold(scheme, "Bearer") || token == "" {
+					lim.chargeAuthFailure(r, failBucket)
 					unauthorized(w, r)
 					return
 				}
@@ -84,11 +98,15 @@ func authenticate(v *auth.Verifier, keys *auth.KeyResolver, logger *slog.Logger)
 			switch {
 			case err == nil:
 				next.ServeHTTP(w, r.WithContext(principal.With(r.Context(), p)))
+			case r.Context().Err() != nil:
+				// The client went away while we were resolving its credential; nothing to report.
+				problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "request cancelled")
 			case errors.Is(err, auth.ErrKeysUnavailable), errors.Is(err, auth.ErrBackendUnavailable):
 				// F02: the identity provider (or control-plane) cannot vouch right now; this is not the caller's fault.
 				logger.WarnContext(r.Context(), "authentication backend unavailable", slog.Any("error", err))
 				problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "authentication temporarily unavailable")
 			default:
+				lim.chargeAuthFailure(r, failBucket)
 				unauthorized(w, r)
 			}
 		})
@@ -109,6 +127,8 @@ type RateRule struct {
 // Limits configures rate limiting (ADR-0026).
 type Limits struct {
 	User, APIKey, Anonymous RateRule
+	// AuthFailure is the per-client-IP budget of failed authentications (credential guessing).
+	AuthFailure RateRule
 	// Operations add a stricter per-principal bucket for sensitive operations (by operationId), e.g. member
 	// changes and organization creation.
 	Operations map[string]RateRule
@@ -154,6 +174,24 @@ func (l *limiter) allow(w http.ResponseWriter, r *http.Request, bucket, kind str
 	w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(d.RetryAfter.Seconds()))))
 	httpProblemTooMany(w, r)
 	return false
+}
+
+// admitAuthAttempt refuses (429) a client whose failed-authentication budget is exhausted, without consuming it.
+// Redis unavailable → admit (F03).
+func (l *limiter) admitAuthAttempt(w http.ResponseWriter, r *http.Request, bucket string) bool {
+	d, err := l.store.Peek(r.Context(), bucket, l.limits.AuthFailure.Rate, l.limits.AuthFailure.Burst)
+	if err != nil || d.Allowed {
+		return true
+	}
+	l.limited.Add(r.Context(), 1, metric.WithAttributes(attribute.String("bucket", "auth_failure")))
+	w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(d.RetryAfter.Seconds()))))
+	httpProblemTooMany(w, r)
+	return false
+}
+
+// chargeAuthFailure consumes one failed authentication from the client's budget (best effort).
+func (l *limiter) chargeAuthFailure(r *http.Request, bucket string) {
+	_, _ = l.store.Allow(r.Context(), bucket, l.limits.AuthFailure.Rate, l.limits.AuthFailure.Burst)
 }
 
 func httpProblemTooMany(w http.ResponseWriter, r *http.Request) {
@@ -231,42 +269,44 @@ func securityCheck(ctx context.Context, in *openapi3filter.AuthenticationInput) 
 }
 
 // policy is the edge authorization of one operation: which permission, and whether a project path parameter
-// scopes it. Organization-less operations (my organizations, create organization) have none.
+// scopes it. Organization-less operations (my organizations, create organization) have none. Keys are the
+// operation names the generated strict handler passes to middleware: the OpenAPI operationId with its first
+// letter upper-cased (TestPolicyCoversEveryOperation keeps the table and the contract in sync).
 type policy struct {
 	perm    cpv1.Permission
 	project bool
 }
 
 var policies = map[string]policy{
-	"getOrganization":    {perm: cpv1.Permission_PERMISSION_ORG_READ},
-	"updateOrganization": {perm: cpv1.Permission_PERMISSION_ORG_UPDATE},
-	"deleteOrganization": {perm: cpv1.Permission_PERMISSION_ORG_DELETE},
-	"listMembers":        {perm: cpv1.Permission_PERMISSION_MEMBER_READ},
-	"getMember":          {perm: cpv1.Permission_PERMISSION_MEMBER_READ},
-	"addMember":          {perm: cpv1.Permission_PERMISSION_MEMBER_MANAGE},
-	"updateMemberRole":   {perm: cpv1.Permission_PERMISSION_MEMBER_MANAGE},
+	"GetOrganization":    {perm: cpv1.Permission_PERMISSION_ORG_READ},
+	"UpdateOrganization": {perm: cpv1.Permission_PERMISSION_ORG_UPDATE},
+	"DeleteOrganization": {perm: cpv1.Permission_PERMISSION_ORG_DELETE},
+	"ListMembers":        {perm: cpv1.Permission_PERMISSION_MEMBER_READ},
+	"GetMember":          {perm: cpv1.Permission_PERMISSION_MEMBER_READ},
+	"AddMember":          {perm: cpv1.Permission_PERMISSION_MEMBER_MANAGE},
+	"UpdateMemberRole":   {perm: cpv1.Permission_PERMISSION_MEMBER_MANAGE},
 	// Members may remove themselves, which the edge cannot tell apart; control-plane decides (ADR-0022).
-	"removeMember":    {perm: cpv1.Permission_PERMISSION_MEMBER_READ},
-	"listProjects":    {perm: cpv1.Permission_PERMISSION_ORG_READ}, // keys list only their own project
-	"getProject":      {perm: cpv1.Permission_PERMISSION_PROJECT_READ, project: true},
-	"createProject":   {perm: cpv1.Permission_PERMISSION_PROJECT_WRITE},
-	"updateProject":   {perm: cpv1.Permission_PERMISSION_PROJECT_WRITE},
-	"deleteProject":   {perm: cpv1.Permission_PERMISSION_PROJECT_WRITE},
-	"listResources":   {perm: cpv1.Permission_PERMISSION_RESOURCE_READ, project: true},
-	"getResource":     {perm: cpv1.Permission_PERMISSION_RESOURCE_READ, project: true},
-	"createResource":  {perm: cpv1.Permission_PERMISSION_RESOURCE_WRITE, project: true},
-	"updateResource":  {perm: cpv1.Permission_PERMISSION_RESOURCE_WRITE, project: true},
-	"deleteResource":  {perm: cpv1.Permission_PERMISSION_RESOURCE_WRITE, project: true},
-	"listApiKeys":     {perm: cpv1.Permission_PERMISSION_APIKEY_READ},
-	"getApiKey":       {perm: cpv1.Permission_PERMISSION_APIKEY_READ},
-	"createApiKey":    {perm: cpv1.Permission_PERMISSION_APIKEY_MANAGE},
-	"revokeApiKey":    {perm: cpv1.Permission_PERMISSION_APIKEY_MANAGE},
-	"listAuditEvents": {perm: cpv1.Permission_PERMISSION_AUDIT_READ},
+	"RemoveMember":    {perm: cpv1.Permission_PERMISSION_MEMBER_READ},
+	"ListProjects":    {perm: cpv1.Permission_PERMISSION_ORG_READ}, // keys list only their own project
+	"GetProject":      {perm: cpv1.Permission_PERMISSION_PROJECT_READ, project: true},
+	"CreateProject":   {perm: cpv1.Permission_PERMISSION_PROJECT_WRITE},
+	"UpdateProject":   {perm: cpv1.Permission_PERMISSION_PROJECT_WRITE},
+	"DeleteProject":   {perm: cpv1.Permission_PERMISSION_PROJECT_WRITE},
+	"ListResources":   {perm: cpv1.Permission_PERMISSION_RESOURCE_READ, project: true},
+	"GetResource":     {perm: cpv1.Permission_PERMISSION_RESOURCE_READ, project: true},
+	"CreateResource":  {perm: cpv1.Permission_PERMISSION_RESOURCE_WRITE, project: true},
+	"UpdateResource":  {perm: cpv1.Permission_PERMISSION_RESOURCE_WRITE, project: true},
+	"DeleteResource":  {perm: cpv1.Permission_PERMISSION_RESOURCE_WRITE, project: true},
+	"ListApiKeys":     {perm: cpv1.Permission_PERMISSION_APIKEY_READ},
+	"GetApiKey":       {perm: cpv1.Permission_PERMISSION_APIKEY_READ},
+	"CreateApiKey":    {perm: cpv1.Permission_PERMISSION_APIKEY_MANAGE},
+	"RevokeApiKey":    {perm: cpv1.Permission_PERMISSION_APIKEY_MANAGE},
+	"ListAuditEvents": {perm: cpv1.Permission_PERMISSION_AUDIT_READ},
 }
 
 // operationPolicy runs inside the generated strict handler (it knows the operationId): the per-operation rate
 // limits, then the edge pre-authorization of ADR-0022. Denials of outsiders are 404 so ids reveal nothing.
-func operationPolicy(az *authz.Authorizer, l *limiter) api.StrictMiddlewareFunc {
+func operationPolicy(az *authz.Authorizer, l *limiter, timeout time.Duration) api.StrictMiddlewareFunc {
 	return func(f api.StrictHandlerFunc, operationID string) api.StrictHandlerFunc {
 		pol, guarded := policies[operationID]
 		rule, limited := l.limits.Operations[operationID]
@@ -278,16 +318,26 @@ func operationPolicy(az *authz.Authorizer, l *limiter) api.StrictMiddlewareFunc 
 			if !guarded || !authed {
 				return f(ctx, w, r, request)
 			}
-			org := r.PathValue("org_id")
-			project := ""
+			// Canonical UUID text, so case variants neither split the decision cache nor fail the key-org match.
+			orgID, err := uuid.Parse(r.PathValue("org_id"))
+			if err != nil {
+				problem(w, r, http.StatusBadRequest, codeValidation, "invalid organization id")
+				return nil, errResponded
+			}
+			org, project := orgID.String(), ""
 			if pol.project {
-				project = r.PathValue("project_id")
+				projectID, perr := uuid.Parse(r.PathValue("project_id"))
+				if perr != nil {
+					problem(w, r, http.StatusBadRequest, codeValidation, "invalid project id")
+					return nil, errResponded
+				}
+				project = projectID.String()
 			}
 			if p.Kind == principal.APIKey && p.OrgID != org {
 				problem(w, r, http.StatusNotFound, codeNotFound, "not found")
 				return nil, errResponded
 			}
-			cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			cctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 			d, err := az.Check(cctx, p, org, pol.perm, project)
 			if err != nil {

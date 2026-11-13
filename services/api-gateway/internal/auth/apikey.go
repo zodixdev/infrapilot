@@ -13,6 +13,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -42,6 +43,7 @@ type KeyResolver struct {
 	NegativeTTL time.Duration
 	now         func() time.Time
 	lookups     metric.Int64Counter
+	sf          singleflight.Group
 }
 
 // NewKeyResolver returns a resolver with 30 s positive and 5 s negative caching.
@@ -79,22 +81,45 @@ func (r *KeyResolver) Resolve(ctx context.Context, raw string) (*principal.Princ
 	}
 	sum := sha256.Sum256([]byte(raw))
 	cacheKey := "ak:" + hex.EncodeToString(sum[:])
-	if b, found, err := r.cache.Get(ctx, cacheKey); err == nil && found {
+	b, found, err := r.cache.Get(ctx, cacheKey)
+	switch {
+	case errors.Is(err, redisx.ErrTampered):
+		r.count(ctx, "corrupt")
+	case err != nil:
+		r.count(ctx, "error") // Redis down: resolve through control-plane (F03)
+	case !found:
+		r.count(ctx, "miss")
+	default:
 		var c cachedKey
 		if json.Unmarshal(b, &c) == nil {
 			r.count(ctx, "hit")
 			return r.toPrincipal(&c)
 		}
-	} else if err != nil {
-		r.count(ctx, "error") // Redis down: resolve through control-plane (F03)
-	} else {
-		r.count(ctx, "miss")
+		r.count(ctx, "corrupt")
 	}
+	// Concurrent misses for the same key share one control-plane call; each waiter honors its own cancellation.
+	ch := r.sf.DoChan(cacheKey, func() (any, error) {
+		return r.lookup(context.WithoutCancel(ctx), cacheKey, sum[:])
+	})
+	select {
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		c, _ := res.Val.(*cachedKey)
+		return r.toPrincipal(c)
+	case <-ctx.Done():
+		return nil, fmt.Errorf("auth: %w", ctx.Err())
+	}
+}
+
+// lookup asks control-plane and caches the answer (negative answers briefly).
+func (r *KeyResolver) lookup(ctx context.Context, cacheKey string, sum []byte) (*cachedKey, error) {
 	octx, err := principal.Outgoing(ctx) // request id only: there is no principal yet
 	if err != nil {
 		return nil, err
 	}
-	resp, err := r.client.AuthenticateApiKey(octx, &cpv1.AuthenticateApiKeyRequest{KeySha256: sum[:]})
+	resp, err := r.client.AuthenticateApiKey(octx, &cpv1.AuthenticateApiKeyRequest{KeySha256: sum})
 	var c cachedKey
 	switch status.Code(err) {
 	case codes.OK:
@@ -115,7 +140,7 @@ func (r *KeyResolver) Resolve(ctx context.Context, raw string) (*principal.Princ
 	if b, mErr := json.Marshal(c); mErr == nil {
 		_ = r.cache.Set(ctx, cacheKey, b, ttl) // best effort
 	}
-	return r.toPrincipal(&c)
+	return &c, nil
 }
 
 func (r *KeyResolver) toPrincipal(c *cachedKey) (*principal.Principal, error) {
@@ -129,4 +154,7 @@ func (r *KeyResolver) count(ctx context.Context, result string) {
 	r.lookups.Add(ctx, 1, metric.WithAttributes(attribute.String("cache", "apikey"), attribute.String("result", result)))
 }
 
-var _ Cache = (*redisx.Store)(nil)
+var (
+	_ Cache = (*redisx.Store)(nil)
+	_ Cache = (*redisx.SignedCache)(nil)
+)

@@ -38,10 +38,11 @@ type Store struct {
 	now    func() time.Time
 	errors metric.Int64Counter
 
-	mu        sync.Mutex
-	failures  int
-	openUntil time.Time
-	probing   bool
+	mu         sync.Mutex
+	failures   int
+	openUntil  time.Time
+	probing    bool
+	generation uint64 // incremented whenever the breaker opens
 }
 
 // New returns a Store; it does not connect eagerly (startup must not depend on Redis, F03). The client must be
@@ -98,6 +99,7 @@ func (s *Store) do(ctx context.Context, fn func(ctx context.Context) error) erro
 		return ErrUnavailable
 	}
 	s.probing = half
+	gen := s.generation
 	s.mu.Unlock()
 
 	cctx, cancel := context.WithTimeout(ctx, s.cfg.CallTimeout)
@@ -109,7 +111,9 @@ func (s *Store) do(ctx context.Context, fn func(ctx context.Context) error) erro
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.probing = false
+	if half {
+		s.probing = false
+	}
 	if err == nil {
 		s.failures, s.openUntil = 0, time.Time{}
 		return nil
@@ -117,9 +121,14 @@ func (s *Store) do(ctx context.Context, fn func(ctx context.Context) error) erro
 	if ctx.Err() != nil {
 		return fmt.Errorf("redisx: %w", ctx.Err()) // the caller gave up; not Redis' fault
 	}
-	s.failures++
-	if s.failures >= s.cfg.FailureThreshold || half {
-		s.openUntil = s.now().Add(s.cfg.OpenFor)
+	// Calls admitted before the breaker last changed state report late; they must not extend an open period.
+	if gen == s.generation {
+		s.failures++
+		if s.failures >= s.cfg.FailureThreshold || half {
+			s.openUntil = s.now().Add(s.cfg.OpenFor)
+			s.failures = 0
+			s.generation++
+		}
 	}
 	s.errors.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", "error")))
 	return fmt.Errorf("%w: %w", ErrUnavailable, err)
@@ -172,6 +181,7 @@ var gcra = redis.NewScript(`
 local key = KEYS[1]
 local burst = tonumber(ARGV[1])
 local interval = tonumber(ARGV[2])
+local peek = ARGV[3] == "1"
 local t = redis.call("TIME")
 local now = (tonumber(t[1]) - 1483228800) + tonumber(t[2]) / 1000000
 local tat = tonumber(redis.call("GET", key) or now)
@@ -181,6 +191,9 @@ local allow_at = new_tat - burst * interval
 local diff = now - allow_at
 if diff < 0 then
   return {0, 0, tostring(-diff), tostring(tat - now)}
+end
+if peek then
+  return {1, math.floor(diff / interval + 1e-4), "0", tostring(tat - now)}
 end
 local ttl = math.ceil(new_tat - now)
 if ttl < 1 then ttl = 1 end
@@ -198,12 +211,26 @@ type Decision struct {
 
 // Allow consumes one request from the bucket key with the given steady rate (per second) and burst.
 func (s *Store) Allow(ctx context.Context, key string, ratePerSecond float64, burst int) (Decision, error) {
+	return s.gcra(ctx, key, ratePerSecond, burst, false)
+}
+
+// Peek reports whether one more request would be admitted without consuming anything (e.g. to refuse work for
+// a client that exhausted its failed-authentication budget before doing that work).
+func (s *Store) Peek(ctx context.Context, key string, ratePerSecond float64, burst int) (Decision, error) {
+	return s.gcra(ctx, key, ratePerSecond, burst, true)
+}
+
+func (s *Store) gcra(ctx context.Context, key string, ratePerSecond float64, burst int, peek bool) (Decision, error) {
+	peekArg := "0"
+	if peek {
+		peekArg = "1"
+	}
 	if ratePerSecond <= 0 || burst <= 0 {
 		return Decision{}, errors.New("redisx: rate and burst must be positive")
 	}
 	var d Decision
 	err := s.do(ctx, func(ctx context.Context) error {
-		res, err := gcra.Run(ctx, s.rdb, []string{s.cfg.KeyPrefix + "rl:" + key}, burst, strconv.FormatFloat(1/ratePerSecond, 'f', -1, 64)).Slice()
+		res, err := gcra.Run(ctx, s.rdb, []string{s.cfg.KeyPrefix + "rl:" + key}, burst, strconv.FormatFloat(1/ratePerSecond, 'f', -1, 64), peekArg).Slice()
 		if err != nil {
 			return err
 		}

@@ -6,18 +6,20 @@ package authz
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"golang.org/x/sync/singleflight"
 
 	cpv1 "github.com/zodixdev/infrapilot/gen/go/infrapilot/controlplane/v1"
 	"github.com/zodixdev/infrapilot/services/api-gateway/internal/auth"
 	"github.com/zodixdev/infrapilot/services/api-gateway/internal/principal"
+	"github.com/zodixdev/infrapilot/services/api-gateway/internal/redisx"
 )
 
 // Decision of a pre-authorization.
@@ -34,6 +36,7 @@ type Authorizer struct {
 	AllowTTL time.Duration
 	DenyTTL  time.Duration
 	lookups  metric.Int64Counter
+	sf       singleflight.Group
 }
 
 // New returns an authorizer.
@@ -45,18 +48,54 @@ func New(cache auth.Cache, client cpv1.AuthorizationServiceClient, meter metric.
 	return &Authorizer{cache: cache, client: client, AllowTTL: 30 * time.Second, DenyTTL: 5 * time.Second, lookups: c}, nil
 }
 
-// Check decides perm for the principal in ctx (which Outgoing forwards) on org and, optionally, project.
+// cacheKey hashes the length-prefixed parts, so no combination of values can collide with another.
+func cacheKey(parts ...string) string {
+	h := sha256.New()
+	var n [8]byte
+	for _, p := range parts {
+		binary.BigEndian.PutUint64(n[:], uint64(len(p)))
+		_, _ = h.Write(n[:]) // hash.Hash.Write never returns an error
+		_, _ = h.Write([]byte(p))
+	}
+	return "pc:" + hex.EncodeToString(h.Sum(nil))
+}
+
+// Check decides perm for the principal in ctx (which Outgoing forwards) on org and, optionally, project. Org and
+// project must be canonical UUID strings.
 func (a *Authorizer) Check(ctx context.Context, p *principal.Principal, org string, perm cpv1.Permission, project string) (Decision, error) {
-	sum := sha256.Sum256([]byte(strings.Join([]string{p.Key(), org, perm.String(), project}, "|")))
-	key := "pc:" + hex.EncodeToString(sum[:])
-	if b, found, err := a.cache.Get(ctx, key); err == nil && found && len(b) == 2 {
+	key := cacheKey(p.Key(), org, perm.String(), project)
+	b, found, err := a.cache.Get(ctx, key)
+	switch {
+	case errors.Is(err, redisx.ErrTampered):
+		a.count(ctx, "corrupt")
+	case err != nil:
+		a.count(ctx, "error") // F03: decide through control-plane
+	case found && len(b) == 2:
 		a.count(ctx, "hit")
 		return Decision{Allowed: b[0] == '1', Member: b[1] == '1'}, nil
-	} else if err != nil {
-		a.count(ctx, "error") // F03: decide through control-plane
-	} else {
+	case found:
+		a.count(ctx, "corrupt")
+	default:
 		a.count(ctx, "miss")
 	}
+	// Concurrent misses for the same decision share one call; each waiter honors its own cancellation. The shared
+	// call keeps the first caller's metadata (principal, request id): identical principal by construction of key.
+	ch := a.sf.DoChan(key, func() (any, error) {
+		return a.decide(context.WithoutCancel(ctx), key, org, perm, project)
+	})
+	select {
+	case res := <-ch:
+		if res.Err != nil {
+			return Decision{}, res.Err
+		}
+		d, _ := res.Val.(Decision)
+		return d, nil
+	case <-ctx.Done():
+		return Decision{}, ctx.Err()
+	}
+}
+
+func (a *Authorizer) decide(ctx context.Context, key, org string, perm cpv1.Permission, project string) (Decision, error) {
 	octx, err := principal.Outgoing(ctx)
 	if err != nil {
 		return Decision{}, err
@@ -84,6 +123,3 @@ func flag(b bool) byte {
 func (a *Authorizer) count(ctx context.Context, result string) {
 	a.lookups.Add(ctx, 1, metric.WithAttributes(attribute.String("cache", "authz"), attribute.String("result", result)))
 }
-
-// ErrDenied is returned by callers that turn a negative decision into an error.
-var ErrDenied = errors.New("authz: denied")

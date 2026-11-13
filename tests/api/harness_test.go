@@ -32,6 +32,10 @@ import (
 
 var bins struct{ controlPlane, gateway string }
 
+// parties are the realm clients ("azp") whose tokens the gateway accepts in these tests: the dashboard and the
+// test-only password-grant client.
+const parties = "infrapilot-dashboard" + "," + "infrapilot-e2e"
+
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "infrapilot-api-bins-")
 	if err != nil {
@@ -120,19 +124,26 @@ func freePort(t *testing.T) int {
 func waitReady(t *testing.T, p *process, adminPort int) {
 	t.Helper()
 	url := fmt.Sprintf("http://127.0.0.1:%d/readyz", adminPort)
-	require.Eventually(t, func() bool {
+	deadline := time.Now().Add(60 * time.Second)
+	for {
 		select {
 		case <-p.done:
-			t.Fatalf("process exited:\n%s", tail(p.output(), 40))
+			t.Fatalf("process exited before becoming ready:\n%s", tail(p.output(), 40))
 		default:
 		}
-		resp, err := http.Get(url)
-		if err != nil {
-			return false
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, http.NoBody)
+		require.NoError(t, err)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
 		}
-		_ = resp.Body.Close()
-		return resp.StatusCode == http.StatusOK
-	}, 60*time.Second, 100*time.Millisecond, "service did not become ready")
+		if time.Now().After(deadline) {
+			t.Fatalf("service did not become ready:\n%s", tail(p.output(), 40))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // stack is a running gateway + control-plane with their dependencies.
@@ -149,6 +160,10 @@ type stack struct {
 
 type stackOptions struct {
 	anonymousRPS, anonymousBurst string
+	orgCreateRPS                 string
+	orgCreateBurst               string
+	authFailureRPS               string
+	authFailureBurst             string
 }
 
 func startStack(t *testing.T, opt stackOptions) *stack {
@@ -180,19 +195,23 @@ func startStack(t *testing.T, opt stackOptions) *stack {
 	waitReady(t, cp, cpAdmin)
 
 	gwHTTP, gwAdmin := freePort(t), freePort(t)
+	signing := randomHex(t, 32) // per-run random cache signing material
 	s.gatewayEnv = merge(common, map[string]string{
 		"SERVICE_NAME": "api-gateway", "HTTP_ADDR": fmt.Sprintf("127.0.0.1:%d", gwHTTP), "ADMIN_ADDR": fmt.Sprintf("127.0.0.1:%d", gwAdmin),
 		"GRPC_DISABLED": "true",
 		"OIDC_ISSUER":   s.kc.issuer(), "OIDC_JWKS_URL": s.kc.jwksURL(),
-		"REDIS_ADDR":          redisAddr,
-		"CONTROLPLANE_TARGET": fmt.Sprintf("127.0.0.1:%d", cpGRPC), "CONTROLPLANE_SERVER_NAME": "localhost",
+		"OIDC_AUTHORIZED_PARTIES": parties,
+		"CACHE_SIGNING_KEY":       signing,
+		"REDIS_ADDR":              redisAddr,
+		"CONTROLPLANE_TARGET":     fmt.Sprintf("127.0.0.1:%d", cpGRPC), "CONTROLPLANE_SERVER_NAME": "localhost",
 		"CONTROLPLANE_SERVER_IDENTITY": cpID, "CONTROLPLANE_TLS_CERT_FILE": gwCert.Cert, "CONTROLPLANE_TLS_KEY_FILE": gwCert.Key,
 		"CONTROLPLANE_TLS_CA_FILE": ca.File,
 		"CORS_ALLOWED_ORIGINS":     "http://localhost:3000",
 		// Generous limits so functional tests are not throttled; dedicated tests lower them.
 		"RATE_LIMIT_USER_RPS": "1000", "RATE_LIMIT_USER_BURST": "1000", "RATE_LIMIT_API_KEY_RPS": "1000", "RATE_LIMIT_API_KEY_BURST": "1000",
-		"RATE_LIMIT_MEMBER_CHANGE_RPS": "1000", "RATE_LIMIT_MEMBER_CHANGE_BURST": "1000", "RATE_LIMIT_ORG_CREATE_RPS": "1000",
-		"RATE_LIMIT_ORG_CREATE_BURST": "1000", "RATE_LIMIT_KEY_CREATE_RPS": "1000", "RATE_LIMIT_KEY_CREATE_BURST": "1000",
+		"RATE_LIMIT_MEMBER_CHANGE_RPS": "1000", "RATE_LIMIT_MEMBER_CHANGE_BURST": "1000", "RATE_LIMIT_ORG_CREATE_RPS": or(opt.orgCreateRPS, "1000"),
+		"RATE_LIMIT_ORG_CREATE_BURST": or(opt.orgCreateBurst, "1000"), "RATE_LIMIT_KEY_CREATE_RPS": "1000", "RATE_LIMIT_KEY_CREATE_BURST": "1000",
+		"RATE_LIMIT_AUTH_FAILURE_RPS": or(opt.authFailureRPS, "1000"), "RATE_LIMIT_AUTH_FAILURE_BURST": or(opt.authFailureBurst, "1000"),
 		"RATE_LIMIT_ANONYMOUS_RPS": or(opt.anonymousRPS, "1000"), "RATE_LIMIT_ANONYMOUS_BURST": or(opt.anonymousBurst, "1000"),
 	})
 	s.base, s.adminURL = fmt.Sprintf("http://127.0.0.1:%d/v1", gwHTTP), fmt.Sprintf("http://127.0.0.1:%d", gwAdmin)

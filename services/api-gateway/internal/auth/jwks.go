@@ -109,23 +109,20 @@ func (k *KeySet) Run(ctx context.Context) error {
 	_ = k.refresh(ctx, "startup")
 	t := time.NewTicker(k.cfg.RefreshInterval)
 	defer t.Stop()
-	retry := time.NewTimer(0)
+	// Until the first load succeeds, retry every MinRefreshGap instead of waiting a full interval.
+	retry := time.NewTicker(k.cfg.MinRefreshGap)
 	defer retry.Stop()
-	<-retry.C
 	for {
-		k.mu.RLock()
-		loaded := !k.fetchedAt.IsZero()
-		k.mu.RUnlock()
-		if !loaded {
-			// Not loaded yet: retry soon (bounded by MinRefreshGap) instead of waiting a full interval.
-			retry.Reset(k.cfg.MinRefreshGap)
-		}
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
 			_ = k.refresh(ctx, "interval")
 		case <-retry.C:
+			if k.Loaded() {
+				retry.Stop()
+				continue
+			}
 			_ = k.refresh(ctx, "startup")
 		}
 	}
@@ -143,14 +140,20 @@ func (k *KeySet) Key(ctx context.Context, kid string) (jose.JSONWebKey, error) {
 	if key, ok := k.lookup(kid); ok {
 		return key, nil
 	}
-	k.mu.RLock()
-	allowed := k.now().Sub(k.lastAttempt) >= k.cfg.MinRefreshGap
-	k.mu.RUnlock()
-	if allowed {
-		// Shared by concurrent callers; detached from any one request's cancellation.
-		_, _, _ = k.sf.Do("refresh", func() (any, error) {
+	if k.refreshDue() {
+		// One fetch shared by concurrent callers and detached from any single request; each waiter still stops
+		// waiting when its own request is cancelled.
+		ch := k.sf.DoChan("refresh", func() (any, error) {
+			if !k.refreshDue() { // another flight refreshed while this caller was queued
+				return nil, nil
+			}
 			return nil, k.refresh(context.WithoutCancel(ctx), "unknown_kid")
 		})
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return jose.JSONWebKey{}, fmt.Errorf("auth: %w", ctx.Err())
+		}
 		if key, ok := k.lookup(kid); ok {
 			return key, nil
 		}
@@ -159,6 +162,12 @@ func (k *KeySet) Key(ctx context.Context, kid string) (jose.JSONWebKey, error) {
 		return jose.JSONWebKey{}, ErrKeysUnavailable
 	}
 	return jose.JSONWebKey{}, ErrUnknownKey
+}
+
+func (k *KeySet) refreshDue() bool {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	return k.now().Sub(k.lastAttempt) >= k.cfg.MinRefreshGap
 }
 
 func (k *KeySet) lookup(kid string) (jose.JSONWebKey, bool) {
