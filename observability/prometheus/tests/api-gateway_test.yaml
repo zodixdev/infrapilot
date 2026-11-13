@@ -1,0 +1,103 @@
+# promtool unit tests for observability/prometheus/rules/api-gateway.yaml (run by scripts/obs-check.sh).
+rule_files:
+  - ../rules/api-gateway.yaml
+evaluation_interval: 1m
+
+tests:
+  - name: F03 fail-open and breaker alerts fire while Redis is down, stay quiet otherwise
+    interval: 1m
+    input_series:
+      - series: 'gateway_ratelimit_bypassed_total{job="api-gateway",instance="gw-0",bucket="user"}'
+        values: '0 0 0 60 120 180 240 300 360 420'
+      - series: 'gateway_redis_breaker_open{job="api-gateway",instance="gw-0"}'
+        values: '0 0 0 1 1 1 1 1 1 1'
+      - series: 'gateway_ratelimit_bypassed_total{job="api-gateway",instance="gw-1",bucket="user"}'
+        values: '0x9'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: GatewayRateLimitFailOpen
+        exp_alerts: []
+      - eval_time: 9m
+        alertname: GatewayRateLimitFailOpen
+        exp_alerts:
+          - exp_labels: { severity: warning, job: api-gateway }
+            exp_annotations:
+              summary: "api-gateway admits requests without rate limiting (Redis unavailable)"
+              runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/api-gateway.md#gatewayratelimitfailopen
+      - eval_time: 9m
+        alertname: GatewayRedisBreakerOpen
+        exp_alerts:
+          - exp_labels: { severity: warning, job: api-gateway, instance: gw-0 }
+            exp_annotations:
+              summary: "Redis circuit breaker open on gw-0"
+              runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/api-gateway.md#gatewayredisbreakeropen
+
+  - name: F02 signing keys stale and unavailable
+    interval: 1m
+    input_series:
+      - series: 'gateway_jwks_age_seconds{job="api-gateway",instance="gw-0"}'
+        values: '3500+60x10'
+      - series: 'gateway_jwks_keys{job="api-gateway",instance="gw-0"}'
+        values: '2x10'
+      - series: 'gateway_jwks_keys{job="api-gateway",instance="gw-1"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GatewaySigningKeysStale
+        exp_alerts:
+          - exp_labels: { severity: warning, job: api-gateway, instance: gw-0 }
+            exp_annotations:
+              summary: "gw-0 has not refreshed the identity provider's signing keys for over an hour"
+              runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/api-gateway.md#gatewaysigningkeysstale
+      - eval_time: 10m
+        alertname: GatewaySigningKeysUnavailable
+        exp_alerts:
+          - exp_labels: { severity: critical, job: api-gateway, instance: gw-1 }
+            exp_annotations:
+              summary: "gw-1 has no signing keys; user requests fail with 503"
+              runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/api-gateway.md#gatewaysigningkeysunavailable
+
+  - name: upstream unavailability above 5 % pages, below does not
+    interval: 1m
+    input_series:
+      - series: 'grpc_client_handled_total{job="api-gateway",grpc_upstream="control-plane",grpc_code="OK"}'
+        values: '0+600x10'
+      - series: 'grpc_client_handled_total{job="api-gateway",grpc_upstream="control-plane",grpc_code="Unavailable"}'
+        values: '0+60x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GatewayUpstreamUnavailable
+        exp_alerts:
+          - exp_labels: { severity: critical, job: api-gateway, grpc_upstream: control-plane }
+            exp_annotations:
+              summary: "More than 5 % of calls to control-plane fail as unavailable"
+              runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/api-gateway.md#gatewayupstreamunavailable
+
+  - name: auth failure spike and read latency
+    interval: 1m
+    input_series:
+      - series: 'http_server_requests_total{job="api-gateway",method="GET",route="/v1/organizations/{org_id}",status="401"}'
+        values: '0+600x15'
+      - series: 'http_server_requests_total{job="api-gateway",method="GET",route="/v1/organizations/{org_id}",status="200"}'
+        values: '0+600x15'
+      - series: 'http_server_request_duration_seconds_bucket{job="api-gateway",method="GET",le="0.1"}'
+        values: '0+100x15'
+      - series: 'http_server_request_duration_seconds_bucket{job="api-gateway",method="GET",le="0.5"}'
+        values: '0+200x15'
+      - series: 'http_server_request_duration_seconds_bucket{job="api-gateway",method="GET",le="+Inf"}'
+        values: '0+1200x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: GatewayAuthFailureSpike
+        exp_alerts:
+          - exp_labels: { severity: warning, job: api-gateway }
+            exp_annotations:
+              summary: "api-gateway answers more than 5 unauthenticated requests per second"
+              runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/api-gateway.md#gatewayauthfailurespike
+      - eval_time: 15m
+        alertname: GatewayReadLatencyP99High
+        exp_alerts:
+          - exp_labels: { severity: warning, slo: latency, job: api-gateway }
+            exp_annotations:
+              summary: "api-gateway read p99 latency is above the 300 ms objective"
+              runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/api-gateway.md#gatewayreadlatencyp99high

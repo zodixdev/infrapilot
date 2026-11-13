@@ -1,0 +1,65 @@
+# promtool unit tests for observability/prometheus/rules/control-plane.yaml (run by scripts/obs-check.sh).
+rule_files:
+  - ../rules/control-plane.yaml
+evaluation_interval: 1m
+
+tests:
+  - name: purge staleness — recent success is quiet, an old one fires
+    interval: 10m
+    input_series:
+      - series: 'controlplane_purge_last_success_timestamp_seconds{job="control-plane"}'
+        values: '0 600 _x30'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ControlPlanePurgeStale
+        exp_alerts: []
+      - eval_time: 4h
+        alertname: ControlPlanePurgeStale
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "control-plane retention purge has not succeeded for over 3 hours"
+              runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/control-plane.md#controlplanepurgestale
+
+  - name: purge never reported
+    interval: 10m
+    input_series:
+      - series: 'up{job="unrelated"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 1h
+        alertname: ControlPlanePurgeStale
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "control-plane retention purge has not succeeded for over 3 hours"
+              runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/control-plane.md#controlplanepurgestale
+
+  - name: peer denials and RPC latency
+    interval: 1m
+    input_series:
+      - series: 'grpc_server_peer_denied_total{job="control-plane",grpc_method="/infrapilot.controlplane.v1.OrganizationService/GetOrganization"}'
+        values: '0+5x30'
+      - series: 'grpc_server_handled_total{job="control-plane",grpc_method="ListProjects",grpc_service="infrapilot.controlplane.v1.ProjectService",grpc_code="OK"}'
+        values: '0+600x30'
+      - series: 'grpc_server_handling_seconds_bucket{job="control-plane",grpc_method="ListProjects",le="0.1"}'
+        values: '0+100x30'
+      - series: 'grpc_server_handling_seconds_bucket{job="control-plane",grpc_method="ListProjects",le="0.5"}'
+        values: '0+300x30'
+      - series: 'grpc_server_handling_seconds_bucket{job="control-plane",grpc_method="ListProjects",le="+Inf"}'
+        values: '0+600x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ControlPlanePeerDenied
+        exp_alerts:
+          - exp_labels: { severity: warning, job: control-plane, grpc_method: /infrapilot.controlplane.v1.OrganizationService/GetOrganization }
+            exp_annotations:
+              summary: "control-plane keeps rejecting callers of /infrapilot.controlplane.v1.OrganizationService/GetOrganization (peer allow-list)"
+              runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/control-plane.md#controlplanepeerdenied
+      - eval_time: 25m
+        alertname: ControlPlaneRPCLatencyP99High
+        exp_alerts:
+          - exp_labels: { severity: warning, job: control-plane, grpc_method: ListProjects }
+            exp_annotations:
+              summary: "control-plane ListProjects p99 above 250 ms"
+              runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/control-plane.md#controlplanerpclatencyp99high

@@ -85,6 +85,15 @@ cancellation path; a leak in `pkg/` is a blocker.
 **Mitigate:** fix the slow query or missing index first (`EXPLAIN (ANALYZE, BUFFERS)`); raising `MaxConns` across N replicas must
 stay within the connection budget.
 
+### TLSCertificateExpiringSoon
+**Meaning:** a workload's mTLS certificate (`role` server or client) expires in under 6 hours. Certificates live 24 h and
+renew at 16 h (ADR-0025), so rotation is stuck. At expiry every internal call of that workload fails.
+**Check:** `kubectl -n <ns> get certificate,certificaterequest` (Ready condition, events); cert-manager logs; the issuer
+(`kubectl get clusterissuer infrapilot-internal-ca`); service logs `TLS material reload failed` (a rotated file that
+cannot be parsed keeps the old certificate in use).
+**Mitigate:** fix the issuer/cert-manager; force renewal with `cmctl renew <certificate>` (or delete the Secret);
+services pick up rotated files without a restart.
+
 ## Graceful shutdown sequence (what a rollout does)
 
 1. Kubernetes sends `SIGTERM`. `pkg/app` flips the readiness gate off: `/readyz` → 503, gRPC health → `NOT_SERVING`.

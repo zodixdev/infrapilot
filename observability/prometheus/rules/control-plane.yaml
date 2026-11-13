@@ -1,0 +1,34 @@
+# control-plane alerts (ADR-0022, ADR-0025, ADR-0027). Generic gRPC/Postgres/runtime alerts come from
+# go-service.yaml. Runbook: docs/runbooks/control-plane.md · tests: observability/prometheus/tests/control-plane_test.yaml
+groups:
+  - name: infrapilot-control-plane
+    rules:
+      # The hourly retention job pushes its last success time when it finishes (short-lived job, ADR-0019).
+      - alert: ControlPlanePurgeStale
+        expr: |
+          (time() - max(max_over_time(controlplane_purge_last_success_timestamp_seconds[6h])) > 10800)
+            or absent_over_time(controlplane_purge_last_success_timestamp_seconds[6h])
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "control-plane retention purge has not succeeded for over 3 hours"
+          runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/control-plane.md#controlplanepurgestale
+
+      # Workloads calling RPCs they are not allowed to: a misconfigured identity or an intrusion attempt.
+      - alert: ControlPlanePeerDenied
+        expr: sum by (job, grpc_method) (rate(grpc_server_peer_denied_total{job="control-plane"}[10m])) > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "control-plane keeps rejecting callers of {{ $labels.grpc_method }} (peer allow-list)"
+          runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/control-plane.md#controlplanepeerdenied
+
+      - alert: ControlPlaneRPCLatencyP99High
+        expr: |
+          histogram_quantile(0.99, sum by (job, grpc_method, le) (rate(grpc_server_handling_seconds_bucket{job="control-plane"}[5m]))) > 0.25
+            and sum by (job, grpc_method) (rate(grpc_server_handled_total{job="control-plane"}[5m])) > 0.5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "control-plane {{ $labels.grpc_method }} p99 above 250 ms"
+          runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/control-plane.md#controlplanerpclatencyp99high

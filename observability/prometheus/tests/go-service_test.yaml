@@ -101,3 +101,19 @@ tests:
       - eval_time: 10m
         alertname: ServiceNotReady
         exp_alerts: []
+
+  - name: certificate close to expiry pages, a fresh one does not
+    interval: 1m
+    input_series:
+      - series: 'tls_certificate_expiry_timestamp_seconds{job="control-plane",instance="cp-0",role="server",name="grpc"}'
+        values: '18000x15'
+      - series: 'tls_certificate_expiry_timestamp_seconds{job="control-plane",instance="cp-1",role="server",name="grpc"}'
+        values: '86400x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: TLSCertificateExpiringSoon
+        exp_alerts:
+          - exp_labels: { severity: critical, job: control-plane, instance: cp-0, role: server, name: grpc }
+            exp_annotations:
+              summary: "control-plane/cp-0 server certificate expires in under 6 hours"
+              runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#tlscertificateexpiringsoon

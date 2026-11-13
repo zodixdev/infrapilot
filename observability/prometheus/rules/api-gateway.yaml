@@ -1,0 +1,70 @@
+# api-gateway alerts (ADR-0026, F02, F03). Generic HTTP/gRPC/runtime alerts come from go-service.yaml.
+# Runbook: docs/runbooks/api-gateway.md · unit tests: observability/prometheus/tests/api-gateway_test.yaml
+groups:
+  - name: infrapilot-api-gateway
+    rules:
+      # F03: Redis is unavailable and rate limiting fails open — the API is unprotected against floods.
+      - alert: GatewayRateLimitFailOpen
+        expr: sum by (job) (rate(gateway_ratelimit_bypassed_total{job="api-gateway"}[5m])) > 0
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.job }} admits requests without rate limiting (Redis unavailable)"
+          runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/api-gateway.md#gatewayratelimitfailopen
+
+      - alert: GatewayRedisBreakerOpen
+        expr: max by (job, instance) (gateway_redis_breaker_open{job="api-gateway"}) == 1
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "Redis circuit breaker open on {{ $labels.instance }}"
+          runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/api-gateway.md#gatewayredisbreakeropen
+
+      # F02: the cached signing keys are old because the identity provider cannot be reached. Tokens still
+      # validate, but key rotation at the identity provider would not be picked up.
+      - alert: GatewaySigningKeysStale
+        expr: max by (job, instance) (gateway_jwks_age_seconds{job="api-gateway"}) > 3600
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }} has not refreshed the identity provider's signing keys for over an hour"
+          runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/api-gateway.md#gatewaysigningkeysstale
+
+      # No keys at all: every user request gets 503 (API keys still work).
+      - alert: GatewaySigningKeysUnavailable
+        expr: max by (job, instance) (gateway_jwks_keys{job="api-gateway"}) == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }} has no signing keys; user requests fail with 503"
+          runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/api-gateway.md#gatewaysigningkeysunavailable
+
+      - alert: GatewayUpstreamUnavailable
+        expr: |
+          sum by (job, grpc_upstream) (rate(grpc_client_handled_total{job="api-gateway", grpc_code=~"Unavailable|DeadlineExceeded"}[5m]))
+            / sum by (job, grpc_upstream) (rate(grpc_client_handled_total{job="api-gateway"}[5m])) > 0.05
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "More than 5 % of calls to {{ $labels.grpc_upstream }} fail as unavailable"
+          runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/api-gateway.md#gatewayupstreamunavailable
+
+      # Sustained authentication failures: broken client, expired credentials in automation, or credential stuffing.
+      - alert: GatewayAuthFailureSpike
+        expr: sum by (job) (rate(http_server_requests_total{job="api-gateway", status="401"}[5m])) > 5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.job }} answers more than 5 unauthenticated requests per second"
+          runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/api-gateway.md#gatewayauthfailurespike
+
+      # Public read p99 SLO: < 300 ms (docs/architecture/overview.md §6).
+      - alert: GatewayReadLatencyP99High
+        expr: |
+          histogram_quantile(0.99, sum by (job, le) (rate(http_server_request_duration_seconds_bucket{job="api-gateway", method="GET"}[5m]))) > 0.3
+            and sum by (job) (rate(http_server_requests_total{job="api-gateway", method="GET"}[5m])) > 1
+        for: 10m
+        labels: { severity: warning, slo: latency }
+        annotations:
+          summary: "{{ $labels.job }} read p99 latency is above the 300 ms objective"
+          runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/api-gateway.md#gatewayreadlatencyp99high

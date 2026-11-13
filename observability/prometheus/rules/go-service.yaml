@@ -140,3 +140,15 @@ groups:
         annotations:
           summary: "{{ $labels.job }}/{{ $labels.instance }}: requests wait for Postgres connections ({{ $labels.pool }})"
           runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#pgpoolsaturated
+
+  - name: infrapilot-workload-identity
+    rules:
+      # Workload certificates live 24 h and renew at 16 h (ADR-0025). Under 6 h left means rotation is stuck;
+      # at expiry every mTLS call of the workload fails.
+      - alert: TLSCertificateExpiringSoon
+        expr: min by (job, instance, role, name) (tls_certificate_expiry_timestamp_seconds) - time() < 6 * 3600
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }}/{{ $labels.instance }} {{ $labels.role }} certificate expires in under 6 hours"
+          runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#tlscertificateexpiringsoon
