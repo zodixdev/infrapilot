@@ -158,16 +158,7 @@ func Open(ctx context.Context, cfg Config, opts ...Option) (*Pool, error) {
 	pc.MaxConnLifetime = cfg.MaxConnLifetime
 	pc.MaxConnIdleTime = cfg.MaxConnIdleTime
 	pc.HealthCheckPeriod = cfg.HealthCheckPeriod
-	pc.ConnConfig.ConnectTimeout = cfg.ConnectTimeout
-	if pc.ConnConfig.RuntimeParams == nil {
-		pc.ConnConfig.RuntimeParams = map[string]string{}
-	}
-	if cfg.ApplicationName != "" {
-		pc.ConnConfig.RuntimeParams["application_name"] = cfg.ApplicationName
-	}
-	pc.ConnConfig.RuntimeParams["statement_timeout"] = millis(cfg.StatementTimeout)
-	pc.ConnConfig.RuntimeParams["lock_timeout"] = millis(cfg.LockTimeout)
-	pc.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"] = millis(cfg.IdleInTransactionSessionTimeout)
+	applyConnConfig(pc.ConnConfig, cfg)
 	if o.tp != nil {
 		topts := []otelpgx.Option{otelpgx.WithTracerProvider(o.tp)}
 		if cfg.OmitSQLInSpans {
@@ -198,6 +189,20 @@ func Open(ctx context.Context, cfg Config, opts ...Option) (*Pool, error) {
 		slog.String("user", pc.ConnConfig.User), slog.Int("max_conns", int(cfg.MaxConns)),
 		slog.Bool("bypass_rls", p.bypassRLS))
 	return p, nil
+}
+
+// applyConnConfig sets the per-connection parameters shared by the pool and OpenSQL.
+func applyConnConfig(cc *pgx.ConnConfig, cfg Config) {
+	cc.ConnectTimeout = cfg.ConnectTimeout
+	if cc.RuntimeParams == nil {
+		cc.RuntimeParams = map[string]string{}
+	}
+	if cfg.ApplicationName != "" {
+		cc.RuntimeParams["application_name"] = cfg.ApplicationName
+	}
+	cc.RuntimeParams["statement_timeout"] = millis(cfg.StatementTimeout)
+	cc.RuntimeParams["lock_timeout"] = millis(cfg.LockTimeout)
+	cc.RuntimeParams["idle_in_transaction_session_timeout"] = millis(cfg.IdleInTransactionSessionTimeout)
 }
 
 func millis(d time.Duration) string {

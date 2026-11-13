@@ -47,7 +47,7 @@ jobs:
           dockerfile: tests/platform/conformance/Dockerfile
       - run: make fmt-check lint-go lint-proto lint-helm lint-obs
       - name: Generated code is up to date
-        run: make gen && git diff --exit-code -- gen/
+        run: make gen && git diff --exit-code -- gen/ services/
 
   test:
     name: unit tests (race)

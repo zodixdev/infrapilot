@@ -387,3 +387,20 @@ func TestHealthCheck_SaturatedPoolIsBusyNotDown_Integration(t *testing.T) {
 	require.NoError(t, pool.HealthCheck()(ctx))
 	close(release)
 }
+
+func TestOpenSQL_AppliesConnectionSettings_Integration(t *testing.T) {
+	db := pgtest.Start(t)
+	sqlDB, err := postgres.OpenSQL(postgres.MigrationConfig(postgres.Config{URL: db.MigratorURL, ApplicationName: "svc-migrate"}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
+	var stmt, lock, app string
+	require.NoError(t, sqlDB.QueryRowContext(t.Context(),
+		`SELECT current_setting('statement_timeout'), current_setting('lock_timeout'), current_setting('application_name')`).Scan(&stmt, &lock, &app))
+	require.Equal(t, "0", stmt)
+	require.Equal(t, "3s", lock)
+	require.Equal(t, "svc-migrate", app)
+	require.Equal(t, 1, sqlDB.Stats().MaxOpenConnections)
+
+	_, err = postgres.OpenSQL(postgres.Config{})
+	require.Error(t, err)
+}

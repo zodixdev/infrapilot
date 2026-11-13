@@ -48,11 +48,12 @@ bootstrap: ## Install pinned toolchain (brew packages + Go tools) and git hooks
 	  v="$$($(GOTOOL) $$t $$flag 2>/dev/null | head -1)"; echo "$${v:-built}"; done
 	@if [[ -d .git ]]; then pre-commit install --install-hooks >/dev/null && echo "pre-commit hooks installed"; fi
 
-gen: ## Generate code from contracts (protobuf via buf, OpenAPI via oapi-codegen)
+gen: ## Generate code from contracts (protobuf via buf, OpenAPI via oapi-codegen) and SQL (sqlc)
 	@cd $(ROOT)/contracts && $(GOTOOL) buf generate
 	@cd $(ROOT)/contracts/openapi && $(GOTOOL) oapi-codegen -config oapi-codegen.yaml public.yaml
 	@gofmt -w $(ROOT)/gen/go
 	@cd $(ROOT)/gen && $(GO) mod tidy
+	@for c in $(wildcard $(ROOT)/services/*/sqlc.yaml); do (cd $$(dirname $$c) && $(GOTOOL) sqlc generate) || exit 1; done
 
 fmt: ## Format Go and protobuf sources
 	@gofmt -l -w $(addprefix $(ROOT)/,$(GO_MODULES))
