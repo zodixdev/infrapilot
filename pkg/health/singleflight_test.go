@@ -15,7 +15,7 @@ import (
 )
 
 // TestRegistry_ConcurrentProbesShareOneEvaluation: overlapping /readyz requests on a healthy dependency all
-// report up and run the check once (verification review major 1: no false DOWN).
+// report up and run the check once (an overlapping probe must never report a false DOWN).
 func TestRegistry_ConcurrentProbesShareOneEvaluation(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int32

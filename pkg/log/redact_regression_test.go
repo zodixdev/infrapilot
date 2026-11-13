@@ -26,8 +26,8 @@ type tagged struct {
 
 type withValuer struct{ Value secretValue }
 
-// TestHandler_VerificationReviewCases: every bypass and crash reported by the M01 verification reviews.
-func TestHandler_VerificationReviewCases(t *testing.T) {
+// TestHandler_RedactionEdgeCases: known bypass shapes and values that must not crash the logger.
+func TestHandler_RedactionEdgeCases(t *testing.T) {
 	t.Parallel()
 	var nilURL *url.URL
 	var typedNil *nilError

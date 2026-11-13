@@ -15,7 +15,7 @@ import (
 )
 
 // TestHealthCheck_SaturatedPoolAndDeadDatabaseIsDown_Integration: with every connection held by hung requests
-// and Postgres unresponsive, the probe must not mistake "dead" for "busy" (test-engineer and go-review finding).
+// and Postgres unresponsive, the probe must not mistake "dead" for "busy".
 func TestHealthCheck_SaturatedPoolAndDeadDatabaseIsDown_Integration(t *testing.T) {
 	db := pgtest.Start(t)
 	pool, err := postgres.Open(t.Context(), postgres.Config{URL: db.AppURL, MaxConns: 1, ConnectTimeout: time.Second})

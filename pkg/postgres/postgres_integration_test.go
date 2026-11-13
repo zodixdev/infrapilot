@@ -256,7 +256,7 @@ func TestReadiness_FlipsOnPostgresLoss_Integration(t *testing.T) {
 	require.NoError(t, <-done)
 }
 
-// TestWithSystemTx_IgnoresSessionLevelTenant_Integration reproduces the data-review H2 leak: code that
+// TestWithSystemTx_IgnoresSessionLevelTenant_Integration reproduces a session-level tenant leak: code that
 // bypasses the tenant-safe API leaves a session-level app.org_id on a pooled connection. System
 // transactions must still see no tenant rows, and a tenant transaction must see only its own.
 func TestWithSystemTx_IgnoresSessionLevelTenant_Integration(t *testing.T) {
@@ -356,7 +356,7 @@ func TestTenantSchemaRules_Integration(t *testing.T) {
 }
 
 // TestHealthCheck_SaturatedPoolIsBusyNotDown: with every connection in use the probe times out acquiring,
-// which must not mark the replica unready (go-review minor 16).
+// which must not mark the replica unready.
 func TestHealthCheck_SaturatedPoolIsBusyNotDown_Integration(t *testing.T) {
 	db := pgtest.Start(t)
 	pool, err := postgres.Open(t.Context(), postgres.Config{URL: db.AppURL, MaxConns: 1})

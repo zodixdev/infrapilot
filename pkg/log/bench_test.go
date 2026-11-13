@@ -19,7 +19,7 @@ func BenchmarkHandle_AccessLogRecord(b *testing.B) {
 	for b.Loop() {
 		l.Info("http request", slog.String("method", "GET"), slog.String("route", "/v1/orgs/{id}"),
 			slog.String("path", "/v1/orgs/0192f7a0"), slog.Int("status", 200), slog.Int64("bytes", 512),
-			slog.String("remote", "10.0.0.1:5555"), slog.String("user_agent", "k6/0.50"))
+			slog.String("remote", "192.0.2.10:5555"), slog.String("user_agent", "k6/0.50"))
 	}
 }
 

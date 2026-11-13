@@ -254,7 +254,7 @@ func TestErrorHandler_RateLimitsRepeats(t *testing.T) {
 }
 
 // TestSetup_PushedMetricsIncludeRuntimeCollectors: dashboards and alerts use go_* / process_* names, which
-// must exist on the push path too (SRE review H4).
+// must exist on the push path too.
 func TestSetup_PushedMetricsIncludeRuntimeCollectors(t *testing.T) {
 	addr, _, _ := startCollector(t)
 	p, err := telemetry.Setup(t.Context(), telemetry.Config{
