@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package infrapilot.controlplane.v1;
+
+import "google/protobuf/timestamp.proto";
+import "infrapilot/controlplane/v1/common.proto";
+
+// OrganizationService manages tenants. Every RPC acts for the principal in the request metadata.
+service OrganizationService {
+  // Creates an organization; the caller becomes its owner. Idempotent with x-infrapilot-idempotency-key.
+  rpc CreateOrganization(CreateOrganizationRequest) returns (CreateOrganizationResponse);
+  rpc GetOrganization(GetOrganizationRequest) returns (GetOrganizationResponse);
+  // Lists the organizations the calling user is a member of, with the caller's role.
+  rpc ListMyOrganizations(ListMyOrganizationsRequest) returns (ListMyOrganizationsResponse);
+  rpc UpdateOrganization(UpdateOrganizationRequest) returns (UpdateOrganizationResponse);
+  // Soft-deletes the organization (purged after 30 days, ADR-0027).
+  rpc DeleteOrganization(DeleteOrganizationRequest) returns (DeleteOrganizationResponse);
+}
+
+message Organization {
+  string id = 1;
+  string name = 2;
+  // URL-safe unique handle: lowercase letters, digits and hyphens, 3–63 characters.
+  string slug = 3;
+  google.protobuf.Timestamp create_time = 4;
+  google.protobuf.Timestamp update_time = 5;
+}
+
+message CreateOrganizationRequest {
+  string name = 1;
+  string slug = 2;
+}
+
+message CreateOrganizationResponse {
+  Organization organization = 1;
+}
+
+message GetOrganizationRequest {
+  string organization_id = 1;
+}
+
+message GetOrganizationResponse {
+  Organization organization = 1;
+}
+
+message ListMyOrganizationsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message OrganizationWithRole {
+  Organization organization = 1;
+  Role role = 2;
+}
+
+message ListMyOrganizationsResponse {
+  repeated OrganizationWithRole organizations = 1;
+  string next_page_token = 2;
+}
+
+message UpdateOrganizationRequest {
+  string organization_id = 1;
+  // Fields left unset are not changed.
+  optional string name = 2;
+  optional string slug = 3;
+}
+
+message UpdateOrganizationResponse {
+  Organization organization = 1;
+}
+
+message DeleteOrganizationRequest {
+  string organization_id = 1;
+}
+
+message DeleteOrganizationResponse {}

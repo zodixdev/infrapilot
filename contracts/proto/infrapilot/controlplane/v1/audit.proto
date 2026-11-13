@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package infrapilot.controlplane.v1;
+
+import "google/protobuf/timestamp.proto";
+import "infrapilot/controlplane/v1/common.proto";
+
+// AuditService reads the append-only audit log of an organization.
+service AuditService {
+  // Lists events newest first.
+  rpc ListAuditEvents(ListAuditEventsRequest) returns (ListAuditEventsResponse);
+}
+
+message AuditEvent {
+  string id = 1;
+  string organization_id = 2;
+  PrincipalKind actor_kind = 3;
+  // User id or API key id.
+  string actor_id = 4;
+  // Dot-separated action, e.g. "member.role_changed", "apikey.revoked".
+  string action = 5;
+  string target_type = 6;
+  string target_id = 7;
+  // Action-specific details, e.g. {"old_role": "viewer", "new_role": "admin"}. Never contains secrets.
+  map<string, string> details = 8;
+  string request_id = 9;
+  string trace_id = 10;
+  google.protobuf.Timestamp create_time = 11;
+}
+
+message ListAuditEventsRequest {
+  string organization_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListAuditEventsResponse {
+  repeated AuditEvent events = 1;
+  string next_page_token = 2;
+}

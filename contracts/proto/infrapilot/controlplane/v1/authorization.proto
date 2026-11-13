@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package infrapilot.controlplane.v1;
+
+import "google/protobuf/timestamp.proto";
+import "infrapilot/controlplane/v1/common.proto";
+
+// AuthorizationService answers authentication and authorization questions for the edge and other services.
+service AuthorizationService {
+  // Decides whether the principal in the request metadata holds a permission in an organization
+  // (and project, for API keys). Unknown organizations are reported as not allowed, never as NOT_FOUND.
+  rpc CheckPermission(CheckPermissionRequest) returns (CheckPermissionResponse);
+  // Resolves an API key by the SHA-256 of its full text. Returns UNAUTHENTICATED for unknown, revoked or
+  // expired keys. Called by the gateway before a principal exists, so it requires no principal metadata.
+  rpc AuthenticateApiKey(AuthenticateApiKeyRequest) returns (AuthenticateApiKeyResponse);
+}
+
+message CheckPermissionRequest {
+  string organization_id = 1;
+  Permission permission = 2;
+  // Required when the permission concerns a project-scoped object and the principal is an API key.
+  string project_id = 3;
+}
+
+message CheckPermissionResponse {
+  bool allowed = 1;
+  // The caller's role for users; unspecified for API keys and non-members.
+  Role role = 2;
+}
+
+message AuthenticateApiKeyRequest {
+  // SHA-256 of the full key text (32 bytes).
+  bytes key_sha256 = 1;
+}
+
+message AuthenticateApiKeyResponse {
+  string api_key_id = 1;
+  string organization_id = 2;
+  string project_id = 3;
+  repeated ApiKeyScope scopes = 4;
+  // Unset when the key does not expire.
+  google.protobuf.Timestamp expire_time = 5;
+}

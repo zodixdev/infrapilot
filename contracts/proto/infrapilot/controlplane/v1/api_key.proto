@@ -1,0 +1,77 @@
+syntax = "proto3";
+
+package infrapilot.controlplane.v1;
+
+import "google/protobuf/timestamp.proto";
+import "infrapilot/controlplane/v1/common.proto";
+
+// ApiKeyService manages project-scoped API keys (ADR-0022). The secret is returned exactly once.
+service ApiKeyService {
+  rpc CreateApiKey(CreateApiKeyRequest) returns (CreateApiKeyResponse);
+  rpc GetApiKey(GetApiKeyRequest) returns (GetApiKeyResponse);
+  rpc ListApiKeys(ListApiKeysRequest) returns (ListApiKeysResponse);
+  rpc RevokeApiKey(RevokeApiKeyRequest) returns (RevokeApiKeyResponse);
+}
+
+message ApiKey {
+  string id = 1;
+  string organization_id = 2;
+  string project_id = 3;
+  string name = 4;
+  // Non-secret display prefix, e.g. "ipk_Ab12Cd34".
+  string prefix = 5;
+  repeated ApiKeyScope scopes = 6;
+  google.protobuf.Timestamp create_time = 7;
+  // Unset when the key does not expire.
+  google.protobuf.Timestamp expire_time = 8;
+  // Set once the key is revoked.
+  google.protobuf.Timestamp revoke_time = 9;
+  // User id of the creator.
+  string created_by = 10;
+}
+
+message CreateApiKeyRequest {
+  string organization_id = 1;
+  string project_id = 2;
+  string name = 3;
+  repeated ApiKeyScope scopes = 4;
+  // Optional; must be in the future and at most 400 days ahead.
+  google.protobuf.Timestamp expire_time = 5;
+}
+
+message CreateApiKeyResponse {
+  ApiKey api_key = 1;
+  // The full key. Never stored and never returned again; empty on idempotent replays.
+  string secret = 2;
+}
+
+message GetApiKeyRequest {
+  string organization_id = 1;
+  string api_key_id = 2;
+}
+
+message GetApiKeyResponse {
+  ApiKey api_key = 1;
+}
+
+message ListApiKeysRequest {
+  string organization_id = 1;
+  // Optional filter.
+  string project_id = 2;
+  int32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListApiKeysResponse {
+  repeated ApiKey api_keys = 1;
+  string next_page_token = 2;
+}
+
+message RevokeApiKeyRequest {
+  string organization_id = 1;
+  string api_key_id = 2;
+}
+
+message RevokeApiKeyResponse {
+  ApiKey api_key = 1;
+}

@@ -1,0 +1,100 @@
+syntax = "proto3";
+
+package infrapilot.controlplane.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// ResourceService manages the inventory of monitored resources inside a project.
+service ResourceService {
+  rpc CreateResource(CreateResourceRequest) returns (CreateResourceResponse);
+  rpc GetResource(GetResourceRequest) returns (GetResourceResponse);
+  rpc ListResources(ListResourcesRequest) returns (ListResourcesResponse);
+  rpc UpdateResource(UpdateResourceRequest) returns (UpdateResourceResponse);
+  rpc DeleteResource(DeleteResourceRequest) returns (DeleteResourceResponse);
+}
+
+enum ResourceKind {
+  RESOURCE_KIND_UNSPECIFIED = 0;
+  RESOURCE_KIND_HOST = 1;
+  RESOURCE_KIND_SERVICE = 2;
+  RESOURCE_KIND_ENDPOINT = 3;
+  RESOURCE_KIND_DATABASE = 4;
+  RESOURCE_KIND_QUEUE = 5;
+  RESOURCE_KIND_CONTAINER = 6;
+  RESOURCE_KIND_OTHER = 7;
+}
+
+message Resource {
+  string id = 1;
+  string organization_id = 2;
+  string project_id = 3;
+  ResourceKind kind = 4;
+  // Unique per project; 1–200 characters.
+  string name = 5;
+  // At most 32 labels; keys match ^[a-z][a-z0-9_.-]{0,62}$, values are at most 255 characters.
+  map<string, string> labels = 6;
+  google.protobuf.Timestamp create_time = 7;
+  google.protobuf.Timestamp update_time = 8;
+}
+
+message CreateResourceRequest {
+  string organization_id = 1;
+  string project_id = 2;
+  ResourceKind kind = 3;
+  string name = 4;
+  map<string, string> labels = 5;
+}
+
+message CreateResourceResponse {
+  Resource resource = 1;
+}
+
+message GetResourceRequest {
+  string organization_id = 1;
+  string project_id = 2;
+  string resource_id = 3;
+}
+
+message GetResourceResponse {
+  Resource resource = 1;
+}
+
+message ListResourcesRequest {
+  string organization_id = 1;
+  string project_id = 2;
+  int32 page_size = 3;
+  string page_token = 4;
+  // Optional filter; unspecified lists every kind.
+  ResourceKind kind = 5;
+}
+
+message ListResourcesResponse {
+  repeated Resource resources = 1;
+  string next_page_token = 2;
+}
+
+// Labels wraps a label map so an update can distinguish "unchanged" (absent) from "clear all" (present, empty).
+message Labels {
+  map<string, string> values = 1;
+}
+
+message UpdateResourceRequest {
+  string organization_id = 1;
+  string project_id = 2;
+  string resource_id = 3;
+  optional string name = 4;
+  // Replaces the whole label set when present.
+  Labels labels = 5;
+}
+
+message UpdateResourceResponse {
+  Resource resource = 1;
+}
+
+message DeleteResourceRequest {
+  string organization_id = 1;
+  string project_id = 2;
+  string resource_id = 3;
+}
+
+message DeleteResourceResponse {}

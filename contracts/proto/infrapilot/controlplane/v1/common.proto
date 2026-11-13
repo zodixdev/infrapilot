@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package infrapilot.controlplane.v1;
+
+// Organization role of a user (ADR-0022). Roles are ordered: owner > admin > operator > viewer.
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_OWNER = 1;
+  ROLE_ADMIN = 2;
+  ROLE_OPERATOR = 3;
+  ROLE_VIEWER = 4;
+}
+
+// Named permission checked by CheckPermission and by every control-plane RPC (ADR-0022).
+enum Permission {
+  PERMISSION_UNSPECIFIED = 0;
+  PERMISSION_ORG_READ = 1;
+  PERMISSION_ORG_UPDATE = 2;
+  PERMISSION_ORG_DELETE = 3;
+  PERMISSION_MEMBER_READ = 4;
+  PERMISSION_MEMBER_MANAGE = 5;
+  PERMISSION_PROJECT_READ = 6;
+  PERMISSION_PROJECT_WRITE = 7;
+  PERMISSION_RESOURCE_READ = 8;
+  PERMISSION_RESOURCE_WRITE = 9;
+  PERMISSION_APIKEY_READ = 10;
+  PERMISSION_APIKEY_MANAGE = 11;
+  PERMISSION_AUDIT_READ = 12;
+}
+
+// Scope carried by a project API key (ADR-0022).
+enum ApiKeyScope {
+  API_KEY_SCOPE_UNSPECIFIED = 0;
+  // Read the key's project and its resources.
+  API_KEY_SCOPE_READ = 1;
+  // Read plus create, update and delete resources in the key's project.
+  API_KEY_SCOPE_WRITE = 2;
+  // Send telemetry to the ingestion endpoint; grants no control-plane permission.
+  API_KEY_SCOPE_INGEST = 3;
+}
+
+// Kind of an authenticated caller.
+enum PrincipalKind {
+  PRINCIPAL_KIND_UNSPECIFIED = 0;
+  PRINCIPAL_KIND_USER = 1;
+  PRINCIPAL_KIND_API_KEY = 2;
+}
+
+// Principal is the authenticated end-user or API key a request acts for. The api-gateway sets it in the binary
+// metadata key "x-infrapilot-principal-bin"; services accept it only from allow-listed edge peers (ADR-0025).
+message Principal {
+  PrincipalKind kind = 1;
+  // OIDC subject ("sub") for users.
+  string subject = 2;
+  // Verified e-mail and display name from the token, used to create the user record on first sight.
+  string email = 3;
+  string display_name = 4;
+  // For API keys: the key id and the organization/project/scopes it is bound to.
+  string api_key_id = 5;
+  string organization_id = 6;
+  string project_id = 7;
+  repeated ApiKeyScope scopes = 8;
+}

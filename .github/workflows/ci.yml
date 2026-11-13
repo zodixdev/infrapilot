@@ -37,6 +37,7 @@ jobs:
           cache-dependency-path: |
             pkg/go.sum
             tests/go.sum
+            services/*/go.sum
             tools/go.sum
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:
@@ -61,6 +62,7 @@ jobs:
           cache-dependency-path: |
             pkg/go.sum
             tests/go.sum
+            services/*/go.sum
             tools/go.sum
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:
@@ -80,6 +82,7 @@ jobs:
           cache-dependency-path: |
             pkg/go.sum
             tests/go.sum
+            services/*/go.sum
             tools/go.sum
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:
@@ -100,6 +103,7 @@ jobs:
           cache-dependency-path: |
             pkg/go.sum
             tests/go.sum
+            services/*/go.sum
             tools/go.sum
       - run: make vuln
       - name: gitleaks (full history)
@@ -158,6 +162,7 @@ jobs:
           cache-dependency-path: |
             pkg/go.sum
             tests/go.sum
+            services/*/go.sum
             tools/go.sum
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:

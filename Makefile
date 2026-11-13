@@ -10,8 +10,9 @@ GO ?= go
 # Go-based tools are pinned as `tool` directives in tools/go.mod and run through `go tool`.
 GOTOOL := $(GO) tool
 GO_TOOLS := golangci-lint buf protoc-gen-go protoc-gen-go-grpc sqlc goose oapi-codegen kubeconform govulncheck gitleaks kind yq
-# Go modules that contain code we lint and test (tools/ holds only tool directives).
-GO_MODULES := $(filter-out tools,$(notdir $(patsubst %/,%,$(dir $(wildcard */go.mod)))))
+# Go modules that contain code we lint and test (tools/ holds only tool directives): top-level modules
+# (pkg, gen, tests) and one module per service under services/ (ADR-0001).
+GO_MODULES := $(filter-out tools,$(patsubst %/go.mod,%,$(wildcard */go.mod services/*/go.mod)))
 
 PROFILE ?= core
 comma := ,
