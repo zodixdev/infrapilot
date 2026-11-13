@@ -101,6 +101,14 @@ func (r *KeyResolver) Resolve(ctx context.Context, raw string) (*principal.Princ
 	ch := r.sf.DoChan(cacheKey, func() (any, error) {
 		dctx, cancel := principal.Detach(ctx)
 		defer cancel()
+		// A caller that missed the cache just before an earlier shared call finished starts a new one: the answer is
+		// cached by then.
+		if b, found, err := r.cache.Get(dctx, cacheKey); err == nil && found {
+			var c cachedKey
+			if json.Unmarshal(b, &c) == nil {
+				return &c, nil
+			}
+		}
 		return r.lookup(dctx, cacheKey, sum[:])
 	})
 	select {

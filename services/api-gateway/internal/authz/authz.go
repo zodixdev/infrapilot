@@ -83,6 +83,11 @@ func (a *Authorizer) Check(ctx context.Context, p *principal.Principal, org stri
 	ch := a.sf.DoChan(key, func() (any, error) {
 		dctx, cancel := principal.Detach(ctx)
 		defer cancel()
+		// A caller that missed the cache just before an earlier shared call finished starts a new one: the decision
+		// is cached by then.
+		if b, found, err := a.cache.Get(dctx, key); err == nil && found && len(b) == 2 {
+			return Decision{Allowed: b[0] == '1', Member: b[1] == '1'}, nil
+		}
 		return a.decide(dctx, key, org, perm, project)
 	})
 	select {
