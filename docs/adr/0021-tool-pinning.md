@@ -27,6 +27,8 @@ Option 1, with two rules: (a) the `tools` module contains only tool directives a
 (b) when MVS breaks a tool, pin the offending dependency explicitly in `tools/go.mod` with a comment, or move that
 single tool to option 2 if no compatible version exists. Non-Go tools come from the `Brewfile`
 (`brew bundle --no-upgrade`); CI uses the same versions through the official setup actions where brew is unavailable.
+Exception: `gitleaks` is additionally installed from the Brewfile because `scripts/publish.sh` (owner-maintained)
+requires it on `PATH`; pre-commit and CI run the pinned `go tool gitleaks`.
 
 ## Consequences
 - Good: one `go.mod` to review for tool upgrades; `go tool` works from any directory of the workspace; `make bootstrap`
