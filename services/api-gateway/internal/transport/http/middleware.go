@@ -106,6 +106,8 @@ func authenticate(v *auth.Verifier, keys *auth.KeyResolver, lim *limiter, logger
 				logger.WarnContext(r.Context(), "authentication backend unavailable", slog.Any("error", err))
 				problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "authentication temporarily unavailable")
 			default:
+				// The reason only (never the credential): diagnoses clock skew, wrong client or issuer.
+				logger.DebugContext(r.Context(), "credential rejected", slog.Any("reason", err))
 				lim.chargeAuthFailure(r, failBucket)
 				unauthorized(w, r)
 			}

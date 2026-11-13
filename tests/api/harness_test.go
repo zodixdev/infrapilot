@@ -186,7 +186,7 @@ func startStack(t *testing.T, opt stackOptions) *stack {
 	ca := certtest.NewCA(t)
 	cpID, gwID := certtest.SPIFFE("infrapilot", "control-plane"), certtest.SPIFFE("infrapilot", "api-gateway")
 	cpCert, gwCert := ca.Issue("control-plane", cpID), ca.Issue("api-gateway", gwID)
-	common := map[string]string{"ENVIRONMENT": "test", "LOG_LEVEL": "info", "SHUTDOWN_DELAY": "0s", "SHUTDOWN_TIMEOUT": "5s"}
+	common := map[string]string{"ENVIRONMENT": "test", "LOG_LEVEL": "debug", "SHUTDOWN_DELAY": "0s", "SHUTDOWN_TIMEOUT": "5s"}
 
 	mig := run(t, bins.controlPlane, merge(common, map[string]string{"SERVICE_NAME": "control-plane", "MIGRATION_DATABASE_URL": s.pg.MigratorURL}), "migrate")
 	<-mig.done

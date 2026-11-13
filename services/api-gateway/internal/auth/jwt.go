@@ -75,7 +75,7 @@ type accessClaims struct {
 func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 	tok, err := jwt.ParseSigned(raw, allowedAlgs)
 	if err != nil || len(tok.Headers) != 1 || tok.Headers[0].KeyID == "" {
-		return Identity{}, ErrInvalidToken
+		return Identity{}, fmt.Errorf("%w: malformed or disallowed algorithm", ErrInvalidToken)
 	}
 	key, err := v.keys.Key(ctx, tok.Headers[0].KeyID)
 	if errors.Is(err, ErrKeysUnavailable) {
@@ -85,26 +85,27 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 		return Identity{}, fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
 	if key.Algorithm != "" && key.Algorithm != tok.Headers[0].Algorithm {
-		return Identity{}, ErrInvalidToken // the key is bound to another algorithm
+		return Identity{}, fmt.Errorf("%w: key bound to another algorithm", ErrInvalidToken)
 	}
 	var std jwt.Claims
 	var extra accessClaims
 	if err := tok.Claims(key.Key, &std, &extra); err != nil {
-		return Identity{}, ErrInvalidToken
+		return Identity{}, fmt.Errorf("%w: signature", ErrInvalidToken)
 	}
 	if std.Expiry == nil || std.IssuedAt == nil || std.Subject == "" ||
 		std.Expiry.Time().Sub(std.IssuedAt.Time()) > v.cfg.MaxLifetime {
-		return Identity{}, ErrInvalidToken
+		return Identity{}, fmt.Errorf("%w: missing exp/iat/sub or lifetime too long", ErrInvalidToken)
 	}
 	if !slices.Contains(v.cfg.AuthorizedParties, extra.AuthorizedParty) {
-		return Identity{}, ErrInvalidToken
+		return Identity{}, fmt.Errorf("%w: client %q not accepted", ErrInvalidToken, extra.AuthorizedParty)
 	}
 	if err := std.ValidateWithLeeway(jwt.Expected{Issuer: v.cfg.Issuer, AnyAudience: jwt.Audience{v.cfg.Audience}, Time: v.now()}, v.cfg.Leeway); err != nil {
-		return Identity{}, ErrInvalidToken
+		// Includes issued-in-the-future: check clock skew between the identity provider and the gateway.
+		return Identity{}, fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
 	// Keycloak marks access tokens "Bearer"; ID and refresh tokens carry other types and must not authenticate.
 	if extra.Type != "Bearer" {
-		return Identity{}, ErrInvalidToken
+		return Identity{}, fmt.Errorf("%w: token type %q", ErrInvalidToken, extra.Type)
 	}
 	name := extra.Name
 	if name == "" {
