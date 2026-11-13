@@ -23,13 +23,18 @@ Option 2.
 - Table `idempotency_keys(organization_id, principal_id, key, operation, request_hash, resource_id, created_at)`,
   unique on `(organization_id, principal_id, key)`, tenant table with RLS, retention 24 h (ADR-0027).
 - `request_hash` = SHA-256 over the operation name and the canonical protobuf encoding of the request.
-- Concurrent duplicates: the second insert blocks on the unique index until the first commits, then fails with
-  `unique_violation`; the service retries the read path once and returns the stored result.
+- Concurrent duplicates: each creating transaction first takes a transaction-scoped advisory lock on
+  (organization, principal, key) and only then looks the record up, so a duplicate waits until the first commits and
+  then replays it. (Letting them race on the record's unique index is not enough: they could collide earlier on the
+  resource's own unique keys, e.g. a project slug, and the loser would get 409 instead of the original result.)
+- Within the window a record is authoritative; a record older than 24 h that the hourly purge has not removed yet is
+  replaced in place.
 - Mismatch → `ALREADY_EXISTS` with reason `IDEMPOTENCY_KEY_REUSED` → HTTP 422 `idempotency_key_reused`.
 - Replays return the resource's **current** state with the original status code (201), not a byte-identical copy
-  of the first response. Creating an organization has no tenant yet: with a key, the new organization id is derived
-  deterministically (UUIDv5 over the principal id and the key), so the replay finds its record under that tenant;
-  without a key the id is a UUIDv7.
+  of the first response. Creating an organization has no tenant yet: its keys live in the non-tenant table
+  `org_create_keys (principal_id, key) → organization_id` (same lock, same 24 h window), written in the creating
+  transaction; the organization id is a fresh UUIDv7. (An id derived from principal and key was rejected: after the
+  organization is purged the same key would recreate the same id and expose the purged organization's audit history.)
 - Without the header, creates are not deduplicated (documented in the OpenAPI document).
 
 ## Consequences

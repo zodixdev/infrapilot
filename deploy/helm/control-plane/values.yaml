@@ -27,6 +27,10 @@ env:
     value: spiffe://infrapilot.local/ns/infrapilot/sa/api-gateway
   - name: DB_MAX_CONNS
     value: "10"
+  # Clients balance over the headless Service by DNS and re-resolve when a connection is recycled: a short maximum
+  # age lets new replicas receive traffic within minutes (in-flight RPCs finish within the grace period).
+  - name: GRPC_MAX_CONNECTION_AGE
+    value: 5m
 networkPolicy:
   ingress:
     - podSelector:

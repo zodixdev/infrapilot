@@ -115,7 +115,11 @@ func (s *Store) do(ctx context.Context, fn func(ctx context.Context) error) erro
 		s.probing = false
 	}
 	if err == nil {
-		s.failures, s.openUntil = 0, time.Time{}
+		// Only the probe or a call of the current state may close the breaker: a slow call admitted before it opened
+		// says nothing about Redis now.
+		if half || gen == s.generation {
+			s.failures, s.openUntil = 0, time.Time{}
+		}
 		return nil
 	}
 	if ctx.Err() != nil {

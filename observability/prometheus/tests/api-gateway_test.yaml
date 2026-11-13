@@ -101,3 +101,15 @@ tests:
             exp_annotations:
               summary: "api-gateway read p99 latency is above the 300 ms objective"
               runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/api-gateway.md#gatewayreadlatencyp99high
+
+  - name: a single failure at very low traffic does not page
+    interval: 1m
+    input_series:
+      - series: 'grpc_client_handled_total{job="api-gateway",grpc_upstream="control-plane",grpc_code="OK"}'
+        values: '0+5x10'
+      - series: 'grpc_client_handled_total{job="api-gateway",grpc_upstream="control-plane",grpc_code="Unavailable"}'
+        values: '0+1x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GatewayUpstreamUnavailable
+        exp_alerts: []

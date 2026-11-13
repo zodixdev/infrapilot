@@ -24,6 +24,9 @@ strategy:
 command: []
 args: []
 env: []
+# Environment-specific variables appended after `env` (Helm replaces lists, so an environment's values file sets
+# these without repeating the chart's own env).
+extraEnv: []
 envFrom: []
 # Container ports by name. Set http or grpc to 0 for services without that listener (null is dropped by Helm
 # and would fall back to these defaults).

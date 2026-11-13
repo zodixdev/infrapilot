@@ -103,6 +103,19 @@ func (q *Queries) ListOrganizationsForUser(ctx context.Context, arg ListOrganiza
 	return items, nil
 }
 
+const lockLiveOrganization = `-- name: LockLiveOrganization :one
+SELECT id FROM organizations WHERE id = $1 AND organization_id = $1 AND deleted_at IS NULL FOR SHARE
+`
+
+// Writes that must not outlive the organization's deletion (API keys) share-lock its row; the delete's row lock
+// waits for them, and their later revocation step then sees them.
+func (q *Queries) LockLiveOrganization(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, lockLiveOrganization, id)
+	var id_2 uuid.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
 const softDeleteOrganization = `-- name: SoftDeleteOrganization :execrows
 UPDATE organizations SET deleted_at = now(), updated_at = now()
 WHERE id = $1 AND organization_id = $1 AND deleted_at IS NULL

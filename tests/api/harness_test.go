@@ -164,11 +164,17 @@ type stackOptions struct {
 	orgCreateBurst               string
 	authFailureRPS               string
 	authFailureBurst             string
+	// pgFixedPort keeps Postgres on the same host port across a container restart (F01).
+	pgFixedPort bool
 }
 
 func startStack(t *testing.T, opt stackOptions) *stack {
 	t.Helper()
-	s := &stack{t: t, pg: pgtest.Start(t), kc: startKeycloak(t)}
+	var pgOpts []pgtest.Option
+	if opt.pgFixedPort {
+		pgOpts = append(pgOpts, pgtest.WithFixedHostPort())
+	}
+	s := &stack{t: t, pg: pgtest.Start(t, pgOpts...), kc: startKeycloak(t)}
 	ctx := t.Context()
 	var err error
 	s.redis, err = tcredis.Run(ctx, "redis:7.4-alpine")

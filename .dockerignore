@@ -1,0 +1,9 @@
+# Image builds use the repository root as context but each Go module is built on its own (GOWORK=off), so only
+# module sources are sent to the builder: never local secrets, evidence or build output.
+*
+!gen/
+!pkg/
+!services/
+!tests/
+**/.env*
+**/testdata/

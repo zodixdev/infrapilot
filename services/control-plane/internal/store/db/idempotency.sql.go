@@ -39,9 +39,35 @@ func (q *Queries) GetIdempotencyKey(ctx context.Context, arg GetIdempotencyKeyPa
 	return i, err
 }
 
-const insertIdempotencyKey = `-- name: InsertIdempotencyKey :exec
+const getOrgCreateKey = `-- name: GetOrgCreateKey :one
+SELECT principal_id, key, organization_id, request_hash, created_at FROM org_create_keys
+WHERE principal_id = $1 AND key = $2 AND created_at > now() - interval '24 hours'
+`
+
+type GetOrgCreateKeyParams struct {
+	PrincipalID uuid.UUID
+	Key         string
+}
+
+func (q *Queries) GetOrgCreateKey(ctx context.Context, arg GetOrgCreateKeyParams) (OrgCreateKey, error) {
+	row := q.db.QueryRow(ctx, getOrgCreateKey, arg.PrincipalID, arg.Key)
+	var i OrgCreateKey
+	err := row.Scan(
+		&i.PrincipalID,
+		&i.Key,
+		&i.OrganizationID,
+		&i.RequestHash,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const insertIdempotencyKey = `-- name: InsertIdempotencyKey :execrows
 INSERT INTO idempotency_keys (organization_id, principal_id, key, operation, request_hash, resource_id)
 VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (organization_id, principal_id, key) DO UPDATE
+    SET operation = EXCLUDED.operation, request_hash = EXCLUDED.request_hash, resource_id = EXCLUDED.resource_id, created_at = now()
+    WHERE idempotency_keys.created_at <= now() - interval '24 hours'
 `
 
 type InsertIdempotencyKeyParams struct {
@@ -53,8 +79,9 @@ type InsertIdempotencyKeyParams struct {
 	ResourceID     uuid.UUID
 }
 
-func (q *Queries) InsertIdempotencyKey(ctx context.Context, arg InsertIdempotencyKeyParams) error {
-	_, err := q.db.Exec(ctx, insertIdempotencyKey,
+// Replaces an expired record (older than the 24 h window but not yet purged); 0 rows means a live record exists.
+func (q *Queries) InsertIdempotencyKey(ctx context.Context, arg InsertIdempotencyKeyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertIdempotencyKey,
 		arg.OrganizationID,
 		arg.PrincipalID,
 		arg.Key,
@@ -62,5 +89,47 @@ func (q *Queries) InsertIdempotencyKey(ctx context.Context, arg InsertIdempotenc
 		arg.RequestHash,
 		arg.ResourceID,
 	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const insertOrgCreateKey = `-- name: InsertOrgCreateKey :execrows
+INSERT INTO org_create_keys (principal_id, key, organization_id, request_hash)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (principal_id, key) DO UPDATE
+    SET organization_id = EXCLUDED.organization_id, request_hash = EXCLUDED.request_hash, created_at = now()
+    WHERE org_create_keys.created_at <= now() - interval '24 hours'
+`
+
+type InsertOrgCreateKeyParams struct {
+	PrincipalID    uuid.UUID
+	Key            string
+	OrganizationID uuid.UUID
+	RequestHash    []byte
+}
+
+func (q *Queries) InsertOrgCreateKey(ctx context.Context, arg InsertOrgCreateKeyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertOrgCreateKey,
+		arg.PrincipalID,
+		arg.Key,
+		arg.OrganizationID,
+		arg.RequestHash,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const lockIdempotencyKey = `-- name: LockIdempotencyKey :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
+`
+
+// Serializes requests with the same (organization, principal, key) for the rest of the transaction, so a
+// concurrent duplicate waits and then replays instead of colliding on the resource's own unique keys.
+func (q *Queries) LockIdempotencyKey(ctx context.Context, scope string) error {
+	_, err := q.db.Exec(ctx, lockIdempotencyKey, scope)
 	return err
 }

@@ -68,3 +68,24 @@ func TestLoad_Validation(t *testing.T) {
 	require.Nil(t, cert, "CA-only material has no certificate")
 	require.NotNil(t, pool)
 }
+
+func TestNotAfter_FollowsRotationWithoutHandshakes(t *testing.T) {
+	t.Parallel()
+	ca := certtest.NewCA(t)
+	first := ca.Issue("a")
+	dir := t.TempDir()
+	certFile, keyFile := dir+"/tls.crt", dir+"/tls.key"
+	copyFile(t, first.Cert, certFile)
+	copyFile(t, first.Key, keyFile)
+	m, err := tlsreload.Load(certFile, keyFile, "")
+	require.NoError(t, err)
+	before := m.NotAfter()
+	time.Sleep(1100 * time.Millisecond) // validity has one-second resolution: the next certificate expires later
+	third := ca.Issue("c")
+	copyFile(t, third.Cert, certFile)
+	copyFile(t, third.Key, keyFile)
+	future := time.Now().Add(2 * time.Second)
+	require.NoError(t, os.Chtimes(certFile, future, future))
+	require.Eventually(t, func() bool { return m.NotAfter().After(before) }, 5*time.Second, 100*time.Millisecond,
+		"the expiry gauge must not report a stale certificate")
+}

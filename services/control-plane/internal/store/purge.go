@@ -26,6 +26,7 @@ type purgeStep struct {
 var (
 	beforeOrgSteps = []purgeStep{
 		{"idempotency_keys", (*db.Queries).PurgeIdempotencyKeys},
+		{"org_create_keys", (*db.Queries).PurgeOrgCreateKeys},
 		{"audit_events", (*db.Queries).PurgeAuditEvents},
 		{"resources", (*db.Queries).PurgeResources},
 		{"api_keys", (*db.Queries).PurgeAPIKeys},

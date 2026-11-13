@@ -169,6 +169,18 @@ CREATE TABLE idempotency_keys (
 );
 CREATE INDEX idempotency_keys_created_idx ON idempotency_keys (created_at);
 
+-- Organization creates have no tenant yet: their Idempotency-Keys live in this non-tenant table and map to a random
+-- organization id (an id derived from the key could reappear after the organization is purged).
+CREATE TABLE org_create_keys (
+    principal_id    UUID        NOT NULL,
+    key             TEXT        NOT NULL CHECK (char_length(key) BETWEEN 1 AND 128),
+    organization_id UUID        NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    request_hash    BYTEA       NOT NULL CHECK (octet_length(request_hash) = 32),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (principal_id, key)
+);
+CREATE INDEX org_create_keys_created_idx ON org_create_keys (created_at);
+
 -- Row-level security: tenant policy on every tenant table, plus the read-only user policies of ADR-0023.
 ALTER TABLE organizations    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE memberships      ENABLE ROW LEVEL SECURITY;
@@ -225,9 +237,12 @@ BEGIN
   EXECUTE format('GRANT UPDATE (role, updated_at) ON memberships TO %I', app);
   EXECUTE format('GRANT SELECT, INSERT ON api_keys, api_key_index TO %I', app);
   EXECUTE format('GRANT UPDATE (revoked_at) ON api_keys, api_key_index TO %I', app);
-  EXECUTE format('GRANT SELECT, INSERT ON audit_events, idempotency_keys TO %I', app);
+  EXECUTE format('GRANT SELECT, INSERT ON audit_events, idempotency_keys, org_create_keys TO %I', app);
+  -- An expired record (older than 24 h, not yet purged) is replaced in place.
+  EXECUTE format('GRANT UPDATE (operation, request_hash, resource_id, created_at) ON idempotency_keys TO %I', app);
+  EXECUTE format('GRANT UPDATE (organization_id, request_hash, created_at) ON org_create_keys TO %I', app);
   -- Purge job (ADR-0027): reads to select expired rows, deletes in batches.
-  EXECUTE format('GRANT SELECT, DELETE ON users, organizations, projects, resources, api_keys, api_key_index, audit_events, idempotency_keys TO %I', batch);
+  EXECUTE format('GRANT SELECT, DELETE ON users, organizations, projects, resources, api_keys, api_key_index, audit_events, idempotency_keys, org_create_keys TO %I', batch);
   EXECUTE format('GRANT SELECT, DELETE ON memberships TO %I', batch);
   -- Row locks (FOR UPDATE SKIP LOCKED in the user purge) need UPDATE on some column; grant the narrowest one.
   EXECUTE format('GRANT UPDATE (last_seen_at) ON users TO %I', batch);
@@ -236,6 +251,7 @@ $$;
 -- +goose StatementEnd
 
 -- +goose Down
+DROP TABLE org_create_keys;
 DROP TABLE idempotency_keys;
 DROP TRIGGER api_keys_mirror_revocation ON api_keys;
 DROP FUNCTION api_keys_mirror_revocation();

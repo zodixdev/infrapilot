@@ -64,7 +64,8 @@ func seedTenant(t *testing.T, d *testdb.DB, name string) tenant {
 		if err := q.InsertAuditEvent(ctx, db.InsertAuditEventParams{ID: uuid.Must(uuid.NewV7()), OrganizationID: tn.org, ActorKind: "user", ActorID: tn.user, Action: "member.added", TargetType: "member", TargetID: tn.user.String(), Details: []byte(`{}`)}); err != nil {
 			return err
 		}
-		return q.InsertIdempotencyKey(ctx, db.InsertIdempotencyKeyParams{OrganizationID: tn.org, PrincipalID: tn.user, Key: "k1", Operation: "CreateProject", RequestHash: h[:], ResourceID: tn.project})
+		_, err := q.InsertIdempotencyKey(ctx, db.InsertIdempotencyKeyParams{OrganizationID: tn.org, PrincipalID: tn.user, Key: "k1", Operation: "CreateProject", RequestHash: h[:], ResourceID: tn.project})
+		return err
 	}))
 	return tn
 }

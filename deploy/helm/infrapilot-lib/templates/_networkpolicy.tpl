@@ -1,5 +1,6 @@
 {{- define "infrapilot-lib.networkpolicy" -}}
 {{- $v := include "infrapilot-lib.values" . | fromYaml -}}
+{{- include "infrapilot-lib.requireEgress" (dict "v" $v "rules" $v.networkPolicy.egress.rules "what" "networkPolicy") }}
 {{- if $v.networkPolicy.enabled }}
 ---
 # Default deny for both directions; only listed peers may talk to the serving pods and they may only reach

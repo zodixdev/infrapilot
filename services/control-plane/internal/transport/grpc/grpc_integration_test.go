@@ -212,14 +212,27 @@ func TestF01_PostgresRestart_Integration(t *testing.T) {
 			}
 		})
 	}
-	time.Sleep(300 * time.Millisecond)
+	countOK := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		n := 0
+		for _, r := range results {
+			if r.code == codes.OK {
+				n++
+			}
+		}
+		return n
+	}
+	require.Eventually(t, func() bool { return countOK() >= 10 }, 10*time.Second, 10*time.Millisecond, "warm-up traffic")
 	h.db.Restart(t)
 	// After the restart the service recovers on its own: no process restart, the pool reconnects.
 	require.Eventually(t, func() bool {
 		_, err := projects.ListProjects(ctx, &cpv1.ListProjectsRequest{OrganizationId: orgID})
 		return err == nil
 	}, 15*time.Second, 100*time.Millisecond, "service must recover after Postgres is back")
-	time.Sleep(300 * time.Millisecond)
+	recovered := countOK()
+	require.Eventually(t, func() bool { return countOK() >= recovered+10 }, 10*time.Second, 10*time.Millisecond,
+		"writers succeed again after recovery")
 	close(stop)
 	wg.Wait()
 

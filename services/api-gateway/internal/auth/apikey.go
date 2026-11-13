@@ -99,7 +99,9 @@ func (r *KeyResolver) Resolve(ctx context.Context, raw string) (*principal.Princ
 	}
 	// Concurrent misses for the same key share one control-plane call; each waiter honors its own cancellation.
 	ch := r.sf.DoChan(cacheKey, func() (any, error) {
-		return r.lookup(context.WithoutCancel(ctx), cacheKey, sum[:])
+		dctx, cancel := principal.Detach(ctx)
+		defer cancel()
+		return r.lookup(dctx, cacheKey, sum[:])
 	})
 	select {
 	case res := <-ch:

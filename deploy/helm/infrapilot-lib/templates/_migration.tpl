@@ -85,6 +85,7 @@ spec:
             {{- toYaml $v.securityContext | nindent 12 }}
           env:
             {{- include "infrapilot-lib.standardEnv" . | nindent 12 }}
+            {{- include "infrapilot-lib.gomemlimit" $v.migration.resources.limits.memory | nindent 12 }}
             {{- with $v.migration.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

@@ -66,6 +66,14 @@ type Membership struct {
 	UpdatedAt      time.Time
 }
 
+type OrgCreateKey struct {
+	PrincipalID    uuid.UUID
+	Key            string
+	OrganizationID uuid.UUID
+	RequestHash    []byte
+	CreatedAt      time.Time
+}
+
 type Organization struct {
 	ID             uuid.UUID
 	OrganizationID uuid.UUID

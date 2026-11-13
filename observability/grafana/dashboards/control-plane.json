@@ -573,5 +573,15 @@
         "overrides": []
       }
     }
+  ],
+  "links": [
+    {
+      "title": "Go runtime and HTTP/gRPC (this service)",
+      "type": "link",
+      "icon": "dashboard",
+      "url": "/d/infrapilot-go-service?var-job=control-plane",
+      "targetBlank": false,
+      "keepTime": true
+    }
   ]
 }

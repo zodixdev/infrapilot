@@ -1,6 +1,6 @@
 dependencies:
 - name: infrapilot-lib
   repository: file://../infrapilot-lib
-  version: 0.3.0
-digest: sha256:ee3cfbc305c0cd1c9eb853b80a23df49ba520b1883aa279696d9d45b9887464d
-generated: "2026-11-13T13:21:01.63637+03:00"
+  version: 0.4.0
+digest: sha256:e5aa6759b62a5f73fbe4e8820869a5c7e470bd3d65d20c22457d68879946d344
+generated: "2026-11-13T13:43:31.723549+03:00"

@@ -40,9 +40,21 @@ the milestone report; add the missing index through a migration.
 
 ## Operations
 
-- **Restoring a deleted organization (within 30 days):** run as the migrator role (owner, bypasses RLS):
-  `UPDATE organizations SET deleted_at = NULL WHERE id = '<org>';` API keys stay revoked — owners create new ones.
+- **Restoring a deleted organization (within 30 days):** run as the migrator role (owner, bypasses RLS), in one
+  transaction, recording who did it and why in the organization's audit log:
+  ```sql
+  BEGIN;
+  UPDATE organizations SET deleted_at = NULL, updated_at = now() WHERE id = '<org>' AND deleted_at IS NOT NULL;
+  INSERT INTO audit_events (id, organization_id, actor_kind, actor_id, action, target_type, target_id, details, request_id)
+  VALUES (gen_random_uuid(), '<org>', 'user', '<operator user id>', 'org.restored', 'organization', '<org>',
+          jsonb_build_object('ticket', '<incident or ticket id>'), '<ticket id>');
+  COMMIT;
+  ```
+  API keys stay revoked — owners create new ones.
 - **Removing a stuck membership:** never edit `memberships` directly; use the API so the change is audited.
+- **Overlapping retention runs:** the CronJob forbids concurrency; a manually started run that overlaps a scheduled one
+  waits on the other's row locks, fails on the 5-minute idle/lock limits without deleting anything twice, and the next
+  run resumes. Check with `kubectl get jobs -l app.kubernetes.io/component=job-purge`.
 - **Migrations:** applied by the Helm pre-upgrade hook (`control-plane migrate`) as `controlplane_migrator`; a lock
   timeout (another session holds a lock) is retried 5× with backoff before the job fails and the release aborts.
 - **Credentials:** three roles (`_migrator`, `_app`, `_batch`) in Secret `control-plane-db` (`migrator-url`, `app-url`,

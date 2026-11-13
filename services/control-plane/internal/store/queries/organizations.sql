@@ -19,6 +19,11 @@ SET name = coalesce(sqlc.narg(name), name), updated_at = now()
 WHERE id = @id AND organization_id = @id AND deleted_at IS NULL
 RETURNING *;
 
+-- name: LockLiveOrganization :one
+-- Writes that must not outlive the organization's deletion (API keys) share-lock its row; the delete's row lock
+-- waits for them, and their later revocation step then sees them.
+SELECT id FROM organizations WHERE id = @id AND organization_id = @id AND deleted_at IS NULL FOR SHARE;
+
 -- name: SoftDeleteOrganization :execrows
 UPDATE organizations SET deleted_at = now(), updated_at = now()
 WHERE id = @id AND organization_id = @id AND deleted_at IS NULL;

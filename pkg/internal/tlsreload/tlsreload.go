@@ -58,14 +58,7 @@ func Load(certFile, keyFile, caFile string, opts ...Option) (*Material, error) {
 func (m *Material) Current() (*tls.Certificate, *x509.CertPool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if time.Since(m.checked) >= time.Second {
-		m.checked = time.Now()
-		if m.stat() != m.mtimes {
-			if err := m.reloadLocked(); err != nil {
-				m.onError(err) // keep serving the last good material
-			}
-		}
-	}
+	m.refreshLocked()
 	if m.certFile == "" {
 		return nil, m.pool
 	}
@@ -73,11 +66,26 @@ func (m *Material) Current() (*tls.Certificate, *x509.CertPool) {
 	return &cert, m.pool
 }
 
-// NotAfter is the expiry of the current certificate (zero when none is configured).
+// NotAfter is the expiry of the current certificate (zero when none is configured). Like Current it picks up a
+// rotated file first, so an idle process (no handshakes) still reports the certificate on disk.
 func (m *Material) NotAfter() time.Time {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.refreshLocked()
 	return m.notAfter
+}
+
+// refreshLocked reloads changed files, at most once per second.
+func (m *Material) refreshLocked() {
+	if time.Since(m.checked) < time.Second {
+		return
+	}
+	m.checked = time.Now()
+	if m.stat() != m.mtimes {
+		if err := m.reloadLocked(); err != nil {
+			m.onError(err) // keep serving the last good material
+		}
+	}
 }
 
 func (m *Material) reloadLocked() error {

@@ -102,7 +102,7 @@ Every pool is explicit and counted against the cluster's `max_connections` (Post
 `superuser_reserved_connections`, default 3). The rule, checked whenever a service changes replicas or pool size:
 
 ```
-Σ over services (hpa.maxReplicas × app MaxConns)  +  Σ batch pools  +  Σ migration jobs (1 each)
+Σ over services ((hpa.maxReplicas + maxSurge) × app MaxConns)  +  Σ batch pools  +  Σ migration jobs (1 each)
   +  Keycloak (KC_DB_POOL_MAX_SIZE)  +  superuser_reserved  ≤  0.8 × max_connections
 ```
 

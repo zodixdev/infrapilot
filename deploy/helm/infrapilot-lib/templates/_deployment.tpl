@@ -76,7 +76,11 @@ spec:
             {{- end }}
           env:
             {{- include "infrapilot-lib.standardEnv" . | nindent 12 }}
+            {{- include "infrapilot-lib.gomemlimit" $v.resources.limits.memory | nindent 12 }}
             {{- with $v.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with $v.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
           {{- with $v.envFrom }}

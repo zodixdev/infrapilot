@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,15 +15,14 @@ import (
 	"github.com/zodixdev/infrapilot/services/control-plane/internal/store/db"
 )
 
-// orgIDNamespace derives deterministic organization ids for idempotent creates (ADR-0024).
-var orgIDNamespace = uuid.MustParse("5d0f6c1e-8a1b-4f43-9a8e-6f1f0c2b7a10")
-
 // CreateOrganizationInput is the request of CreateOrganization.
 type CreateOrganizationInput struct {
 	Name string `json:"name"`
 }
 
-// CreateOrganization creates an organization owned by the calling user.
+// CreateOrganization creates an organization owned by the calling user. With an Idempotency-Key the
+// (principal, key) → organization mapping is recorded in org_create_keys in the creating transaction (there is
+// no tenant yet for the regular per-tenant record, ADR-0024).
 func (s *Service) CreateOrganization(ctx context.Context, a Actor, in CreateOrganizationInput) (domain.Organization, error) {
 	if a.Kind != domain.ActorUser {
 		return domain.Organization{}, domain.Deniedf("only users can create organizations")
@@ -37,40 +37,53 @@ func (s *Service) CreateOrganization(ctx context.Context, a Actor, in CreateOrga
 		return domain.Organization{}, idemErr
 	}
 	orgID := newID()
-	if idem != nil {
-		// No tenant exists yet: derive the id from (principal, key) so a replay finds its record (ADR-0024).
-		orgID = uuid.NewSHA1(orgIDNamespace, append(a.ID[:], []byte(idem.key)...))
-	}
-	org, err := createIdempotent(ctx, s, orgID, a, idem,
-		func(ctx context.Context, q *db.Queries) (domain.Organization, uuid.UUID, error) {
-			row, err := q.InsertOrganization(ctx, db.InsertOrganizationParams{ID: orgID, Name: in.Name})
+	var replayOf uuid.UUID
+	var out domain.Organization
+	err := s.pool.WithTx(ctx, orgID, func(ctx context.Context, tx pgx.Tx) error {
+		q := db.New(tx)
+		if idem != nil {
+			if err := q.LockIdempotencyKey(ctx, idemScope(uuid.Nil, a.ID, idem.key)); err != nil {
+				return fmt.Errorf("idempotency lock: %w", err)
+			}
+			rec, err := q.GetOrgCreateKey(ctx, db.GetOrgCreateKeyParams{PrincipalID: a.ID, Key: idem.key})
+			switch {
+			case err == nil:
+				if !bytes.Equal(rec.RequestHash, idem.hash) {
+					return domain.ErrIdempotencyKeyReused
+				}
+				replayOf = rec.OrganizationID // read in its own tenant transaction below
+				return nil
+			case !errors.Is(err, pgx.ErrNoRows):
+				return fmt.Errorf("idempotency lookup: %w", err)
+			}
+		}
+		row, err := q.InsertOrganization(ctx, db.InsertOrganizationParams{ID: orgID, Name: in.Name})
+		if err != nil {
+			return err
+		}
+		if err := q.InsertMembership(ctx, db.InsertMembershipParams{OrganizationID: orgID, UserID: a.ID, Role: string(domain.RoleOwner), CreatedBy: &a.ID}); err != nil {
+			return err
+		}
+		if err := audit(ctx, q, orgID, a, "org.created", "organization", orgID.String(), map[string]string{"name": in.Name}); err != nil {
+			return err
+		}
+		if idem != nil {
+			n, err := q.InsertOrgCreateKey(ctx, db.InsertOrgCreateKeyParams{PrincipalID: a.ID, Key: idem.key, OrganizationID: orgID, RequestHash: idem.hash})
 			if err != nil {
-				return domain.Organization{}, uuid.Nil, err
+				return fmt.Errorf("idempotency record: %w", err)
 			}
-			if err := q.InsertMembership(ctx, db.InsertMembershipParams{OrganizationID: orgID, UserID: a.ID, Role: string(domain.RoleOwner), CreatedBy: &a.ID}); err != nil {
-				return domain.Organization{}, uuid.Nil, err
+			if n == 0 {
+				return domain.Conflictf("a concurrent request with this Idempotency-Key is in progress")
 			}
-			if err := audit(ctx, q, orgID, a, "org.created", "organization", orgID.String(), map[string]string{"name": in.Name}); err != nil {
-				return domain.Organization{}, uuid.Nil, err
-			}
-			return toOrganization(&row), orgID, nil
-		},
-		func(ctx context.Context, q *db.Queries, id uuid.UUID) (domain.Organization, error) {
-			// The creator may have left or been removed since: a replay is a read and needs org.read.
-			if _, err := authorize(ctx, q, a, id, domain.PermOrgRead, uuid.Nil); err != nil {
-				return domain.Organization{}, err
-			}
-			row, err := q.GetOrganization(ctx, id)
-			if errors.Is(err, pgx.ErrNoRows) {
-				return domain.Organization{}, domain.NotFoundf("organization %s was deleted", id)
-			}
-			return toOrganization(&row), err
-		})
-	if idem != nil && constraint(err) == "organizations_pkey" {
-		// The derived id belongs to an organization created with this key more than 24 h ago (its record expired).
-		return domain.Organization{}, domain.Conflictf("this Idempotency-Key was already used for an organization; use a new key")
+		}
+		out = toOrganization(&row)
+		return nil
+	})
+	if err != nil || replayOf == uuid.Nil {
+		return out, err
 	}
-	return org, err
+	// Replay: the creator may have left or been removed since; reading the organization needs org.read.
+	return s.GetOrganization(ctx, a, replayOf)
 }
 
 // GetOrganization returns an organization the actor can read.

@@ -10,7 +10,7 @@ service:
   nodePorts: {http: 30080}
 envFrom:
   - configMapRef: {name: infrapilot-otlp}
-env:
+extraEnv:
   - name: OIDC_ISSUER
     value: http://localhost:28180/realms/infrapilot
   - name: OIDC_JWKS_URL
@@ -18,30 +18,14 @@ env:
   # The dashboard client and the test-only password-grant client created by the load and e2e tests.
   - name: OIDC_AUTHORIZED_PARTIES
     value: infrapilot-dashboard,infrapilot-e2e
-  - name: CACHE_SIGNING_KEY
-    valueFrom:
-      secretKeyRef: {name: api-gateway-cache, key: signing-key}
   - name: REDIS_ADDR
     value: redis.infrapilot-deps.svc:6379
-  - name: REDIS_PASSWORD
-    valueFrom:
-      secretKeyRef: {name: api-gateway-redis, key: password}
-  - name: CONTROLPLANE_TARGET
-    value: dns:///control-plane-grpc.infrapilot.svc:9090
-  - name: CONTROLPLANE_SERVER_NAME
-    value: control-plane-grpc.infrapilot.svc
-  - name: CONTROLPLANE_SERVER_IDENTITY
-    value: spiffe://infrapilot.local/ns/infrapilot/sa/control-plane
-  - name: CONTROLPLANE_TLS_CERT_FILE
-    value: /etc/infrapilot/tls/tls.crt
-  - name: CONTROLPLANE_TLS_KEY_FILE
-    value: /etc/infrapilot/tls/tls.key
-  - name: CONTROLPLANE_TLS_CA_FILE
-    value: /etc/infrapilot/tls/ca.crt
-  - name: GRPC_DISABLED
-    value: "true"
+  - name: REDIS_TLS
+    value: "false"
   - name: CORS_ALLOWED_ORIGINS
     value: http://localhost:3000
+  - name: TRUSTED_PROXIES
+    value: ""
 networkPolicy:
   # kind has no ingress controller: the NodePort is reached from the node itself.
   ingress:

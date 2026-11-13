@@ -12,7 +12,8 @@ helm template conformance tests/helm/conformance --namespace infrapilot-test --a
     -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
 # Service charts: strict lint and schema validation as a production render (environment=prod, TLS on). Database
 # egress is environment-specific; a representative private range stands in for it here.
-prod=(--set environment=prod --set 'migration.egress[0].to[0].ipBlock.cidr=10.0.0.0/8')
+prod=(--set environment=prod --set 'migration.egress[0].to[0].ipBlock.cidr=10.0.0.0/8'
+  --set 'networkPolicy.egress.extraRules[0].to[0].ipBlock.cidr=10.0.0.0/8' --set 'networkPolicy.egress.extraRules[0].ports[0].port=4317')
 for chart in deploy/helm/*/; do
   name="$(basename "$chart")"
   [[ "$name" == infrapilot-lib ]] && continue

@@ -81,7 +81,9 @@ func (a *Authorizer) Check(ctx context.Context, p *principal.Principal, org stri
 	// Concurrent misses for the same decision share one call; each waiter honors its own cancellation. The shared
 	// call keeps the first caller's metadata (principal, request id): identical principal by construction of key.
 	ch := a.sf.DoChan(key, func() (any, error) {
-		return a.decide(context.WithoutCancel(ctx), key, org, perm, project)
+		dctx, cancel := principal.Detach(ctx)
+		defer cancel()
+		return a.decide(dctx, key, org, perm, project)
 	})
 	select {
 	case res := <-ch:

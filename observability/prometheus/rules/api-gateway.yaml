@@ -43,6 +43,7 @@ groups:
         expr: |
           sum by (job, grpc_upstream) (rate(grpc_client_handled_total{job="api-gateway", grpc_code=~"Unavailable|DeadlineExceeded"}[5m]))
             / sum by (job, grpc_upstream) (rate(grpc_client_handled_total{job="api-gateway"}[5m])) > 0.05
+          and sum by (job, grpc_upstream) (rate(grpc_client_handled_total{job="api-gateway"}[5m])) > 0.5
         for: 5m
         labels: { severity: critical }
         annotations:

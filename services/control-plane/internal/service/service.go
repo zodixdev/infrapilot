@@ -277,52 +277,58 @@ func newIdempotency(ctx context.Context, op string, input any) (*idempotency, er
 	return &idempotency{key: key, op: op, hash: h[:]}, nil
 }
 
-// createIdempotent runs create inside WithTx(org). With an idempotency record already present it returns
-// replay(resourceID) instead (or ErrIdempotencyKeyReused on a different request). A concurrent duplicate loses
-// the unique-key race; the transaction is then retried once and takes the replay path.
+// createIdempotent runs create inside WithTx(org). With a live idempotency record it returns replay(resourceID)
+// instead (or ErrIdempotencyKeyReused on a different request). A transaction-scoped advisory lock on
+// (org, principal, key) is taken before the lookup, so a concurrent duplicate waits for the first request to
+// commit and then replays — it never races the first one on the resource's own unique keys (ADR-0024).
 func createIdempotent[T any](ctx context.Context, s *Service, org uuid.UUID, a Actor, idem *idempotency,
 	create func(ctx context.Context, q *db.Queries) (T, uuid.UUID, error),
 	replay func(ctx context.Context, q *db.Queries, id uuid.UUID) (T, error),
 ) (T, error) {
 	var out T
-	attempt := func() error {
-		return s.pool.WithTx(ctx, org, func(ctx context.Context, tx pgx.Tx) error {
-			q := db.New(tx)
-			if idem != nil {
-				rec, err := q.GetIdempotencyKey(ctx, db.GetIdempotencyKeyParams{OrganizationID: org, PrincipalID: a.ID, Key: idem.key})
-				switch {
-				case err == nil:
-					if rec.Operation != idem.op || !bytes.Equal(rec.RequestHash, idem.hash) {
-						return domain.ErrIdempotencyKeyReused
-					}
-					out, err = replay(ctx, q, rec.ResourceID)
-					return err
-				case !errors.Is(err, pgx.ErrNoRows):
-					return fmt.Errorf("idempotency lookup: %w", err)
-				}
+	err := s.pool.WithTx(ctx, org, func(ctx context.Context, tx pgx.Tx) error {
+		q := db.New(tx)
+		if idem != nil {
+			if err := q.LockIdempotencyKey(ctx, idemScope(org, a.ID, idem.key)); err != nil {
+				return fmt.Errorf("idempotency lock: %w", err)
 			}
-			v, id, err := create(ctx, q)
-			if err != nil {
+			rec, err := q.GetIdempotencyKey(ctx, db.GetIdempotencyKeyParams{OrganizationID: org, PrincipalID: a.ID, Key: idem.key})
+			switch {
+			case err == nil:
+				if rec.Operation != idem.op || !bytes.Equal(rec.RequestHash, idem.hash) {
+					return domain.ErrIdempotencyKeyReused
+				}
+				out, err = replay(ctx, q, rec.ResourceID)
 				return err
+			case !errors.Is(err, pgx.ErrNoRows):
+				return fmt.Errorf("idempotency lookup: %w", err)
 			}
-			if idem != nil {
-				if err := q.InsertIdempotencyKey(ctx, db.InsertIdempotencyKeyParams{
-					OrganizationID: org, PrincipalID: a.ID, Key: idem.key, Operation: idem.op, RequestHash: idem.hash, ResourceID: id,
-				}); err != nil {
-					return fmt.Errorf("idempotency record: %w", err)
-				}
+		}
+		v, id, err := create(ctx, q)
+		if err != nil {
+			return err
+		}
+		if idem != nil {
+			n, err := q.InsertIdempotencyKey(ctx, db.InsertIdempotencyKeyParams{
+				OrganizationID: org, PrincipalID: a.ID, Key: idem.key, Operation: idem.op, RequestHash: idem.hash, ResourceID: id,
+			})
+			if err != nil {
+				return fmt.Errorf("idempotency record: %w", err)
 			}
-			out = v
-			return nil
-		})
-	}
-	err := attempt()
-	// Only a lost race on the dedup record itself (or on the id derived from it) takes the replay path; any other
-	// conflict is the caller's (e.g. a duplicate slug) and is returned as is.
-	if c := constraint(err); idem != nil && isUniqueViolation(err) && (c == "idempotency_keys_pkey" || c == "organizations_pkey") {
-		err = attempt()
-	}
+			if n == 0 { // impossible under the advisory lock; refuse rather than create a second resource silently
+				return domain.Conflictf("a concurrent request with this Idempotency-Key is in progress")
+			}
+		}
+		out = v
+		return nil
+	})
 	return out, err
+}
+
+// idemScope is the advisory-lock key of an idempotent create; both UUIDs have a fixed length, so the separator
+// cannot be confused with key content.
+func idemScope(org, principal uuid.UUID, key string) string {
+	return org.String() + "/" + principal.String() + "/" + key
 }
 
 func isUniqueViolation(err error) bool {

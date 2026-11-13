@@ -33,7 +33,7 @@ OTLP_EGRESS_CIDR ?= $(shell docker exec $(KIND_CLUSTER)-control-plane getent aho
 HELM_RELEASE ?= conformance
 HELM_NAMESPACE ?= infrapilot-test
 
-.PHONY: kind-platform kind-deps images deploy-services undeploy-services e2e-services load-smoke
+.PHONY: kind-platform kind-deps images deploy-services deploy-services-only undeploy-services e2e-services load-smoke
 .PHONY: help bootstrap gen fmt fmt-check lint lint-go lint-proto lint-helm lint-obs lint-docker vuln db-provision deploy-only undeploy \
         test test-integration verify secrets up down ps logs cluster cluster-down image deploy e2e clean
 
@@ -177,15 +177,19 @@ kind-deps: ## Install PostgreSQL, Redis and Keycloak for the services into kind 
 	    --set servicesNamespace=$(SERVICES_NAMESPACE) --set otlp.endpoint=$(OTLP_ENDPOINT) --wait --timeout 600s
 
 images: ## Build the service images (tag: git revision)
-	@for s in $(SERVICES); do docker build -q -f $(ROOT)/services/$$s/Dockerfile -t infrapilot/$$s:$(SERVICE_TAG) $(ROOT) >/dev/null && echo "built infrapilot/$$s:$(SERVICE_TAG)"; done
+	@for s in $(SERVICES); do docker build -q -f $(ROOT)/services/$$s/Dockerfile --build-arg REVISION=$(GIT_REV) \
+	    -t infrapilot/$$s:$(SERVICE_TAG) $(ROOT) >/dev/null && echo "built infrapilot/$$s:$(SERVICE_TAG)"; done
 
-deploy-services: images ## Build, load and install the services into kind, then run their helm tests (needs kind-platform kind-deps)
+deploy-services: images deploy-services-only ## Build, load and install the services into kind, then run their helm tests (needs kind-platform kind-deps)
+
+deploy-services-only: ## Load already built infrapilot/<service>:SERVICE_TAG images (CI deploys the images it scanned) and install them
+	@$(if $(OTLP_EGRESS_CIDR),,$(error cannot resolve $(OTLP_ENDPOINT) from the kind node: services would lose telemetry egress))
 	@for s in $(SERVICES); do \
 	  $(GOTOOL) kind load docker-image infrapilot/$$s:$(SERVICE_TAG) --name $(KIND_CLUSTER) >/dev/null && \
 	  helm dependency update $(ROOT)/deploy/helm/$$s >/dev/null && \
 	  helm --kube-context $(KUBE_CONTEXT) upgrade --install $$s $(ROOT)/deploy/helm/$$s --namespace $(SERVICES_NAMESPACE) \
 	    -f $(ROOT)/deploy/kind/values/$$s.yaml --set image.tag=$(SERVICE_TAG) \
-	    $(if $(OTLP_EGRESS_CIDR),--set 'networkPolicy.egress.extraRules[0].to[0].ipBlock.cidr=$(OTLP_EGRESS_CIDR)' --set 'networkPolicy.egress.extraRules[0].ports[0].port=4317',) \
+	    --set 'networkPolicy.egress.extraRules[0].to[0].ipBlock.cidr=$(OTLP_EGRESS_CIDR)' --set 'networkPolicy.egress.extraRules[0].ports[0].port=4317' \
 	    --wait --timeout 300s && \
 	  helm --kube-context $(KUBE_CONTEXT) test $$s --namespace $(SERVICES_NAMESPACE) --logs || exit 1; \
 	done

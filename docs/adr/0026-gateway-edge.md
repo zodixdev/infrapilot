@@ -41,7 +41,10 @@ local token buckets per replica (limits multiply with replicas).
 - **Failed authentication budget:** before resolving any credential, a per-client-IP GCRA bucket of failed
   authentications is checked without consuming it; every failure consumes from it (default 1/s, burst 20). Credential
   guessing is therefore refused before signature checks or control-plane lookups happen. Like all limits it fails open
-  without Redis.
+  without Redis. Check and charge are separate round trips, so a client can exceed the budget by its number of
+  concurrent in-flight requests — accepted: still bounded, and each attempt is a cheap edge operation.
+- GCRA uses the Redis server clock (`TIME`), so all gateway replicas agree; after a Redis failover to a node with a
+  skewed clock, limits are briefly stricter or looser by the skew — accepted (limits are protective, not billing).
 - Per-principal buckets are per user (not per user and organization: list routes have no organization). Sensitive
   operations (member changes, organization and API-key creation) have additional per-principal buckets, keyed by the
   generated operation name; a unit test keeps the edge policy table and the contract in sync.

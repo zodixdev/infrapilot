@@ -668,5 +668,15 @@
         "overrides": []
       }
     }
+  ],
+  "links": [
+    {
+      "title": "Go runtime and HTTP/gRPC (this service)",
+      "type": "link",
+      "icon": "dashboard",
+      "url": "/d/infrapilot-go-service?var-job=api-gateway",
+      "targetBlank": false,
+      "keepTime": true
+    }
   ]
 }

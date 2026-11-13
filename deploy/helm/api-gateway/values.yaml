@@ -25,19 +25,9 @@ resources:
 tls:
   enabled: true
 env:
-  - name: OIDC_ISSUER
-    value: https://auth.infrapilot.example.com/realms/infrapilot
-  - name: OIDC_JWKS_URL
-    value: https://auth.infrapilot.example.com/realms/infrapilot/protocol/openid-connect/certs
-  - name: OIDC_AUTHORIZED_PARTIES
-    value: infrapilot-dashboard
   - name: CACHE_SIGNING_KEY
     valueFrom:
       secretKeyRef: {name: api-gateway-cache, key: signing-key}
-  - name: REDIS_ADDR
-    value: redis:6379
-  - name: REDIS_TLS
-    value: "true"
   - name: REDIS_PASSWORD
     valueFrom:
       secretKeyRef: {name: api-gateway-redis, key: password}
@@ -55,10 +45,22 @@ env:
     value: /etc/infrapilot/tls/ca.crt
   - name: GRPC_DISABLED
     value: "true"
+# Environment-specific settings (an environment's values file replaces this list as a whole).
+extraEnv:
+  - name: OIDC_ISSUER
+    value: https://auth.infrapilot.example.com/realms/infrapilot
+  - name: OIDC_JWKS_URL
+    value: https://auth.infrapilot.example.com/realms/infrapilot/protocol/openid-connect/certs
+  - name: OIDC_AUTHORIZED_PARTIES
+    value: infrapilot-dashboard
+  - name: REDIS_ADDR
+    value: redis:6379
+  - name: REDIS_TLS
+    value: "true"
   - name: CORS_ALLOWED_ORIGINS
     value: https://app.infrapilot.example.com
-  # Set per environment to the ingress controller pods' CIDR (their X-Forwarded-For is trusted for client-IP
-  # rate limiting). Empty: only the TCP peer address counts.
+  # The ingress controller pods' CIDR (their X-Forwarded-For is trusted for client-IP rate limiting). Empty: only
+  # the TCP peer address counts.
   - name: TRUSTED_PROXIES
     value: ""
 networkPolicy:

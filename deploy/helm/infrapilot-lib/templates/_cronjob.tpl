@@ -4,6 +4,7 @@
 {{- range $job := $v.cronJobs }}
 {{- $j := mergeOverwrite (deepCopy $v.cronJobDefaults) $job -}}
 {{- $name := printf "%s-%s" (include "infrapilot-lib.fullname" $root) (required "cronJobs[].name is required" $j.name) | trunc 52 | trimSuffix "-" -}}
+{{- include "infrapilot-lib.requireEgress" (dict "v" $v "rules" $j.egress "what" (printf "cronJobs[%s]" $j.name)) }}
 {{- if $v.networkPolicy.enabled }}
 ---
 # The job's own policy: no ingress, DNS plus the job's declared egress only.
@@ -83,6 +84,7 @@ spec:
                 {{- toYaml $v.securityContext | nindent 16 }}
               env:
                 {{- include "infrapilot-lib.standardEnv" $root | nindent 16 }}
+                {{- include "infrapilot-lib.gomemlimit" $j.resources.limits.memory | nindent 16 }}
                 {{- with $j.env }}
                 {{- toYaml . | nindent 16 }}
                 {{- end }}

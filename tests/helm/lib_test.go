@@ -378,3 +378,17 @@ func TestLibChart_DisabledPortsRenderNothing(t *testing.T) {
 	_, hasGRPC := env["GRPC_ADDR"]
 	require.False(t, hasGRPC)
 }
+
+func TestLibChart_GoMemLimitFollowsMemoryLimit(t *testing.T) {
+	t.Parallel()
+	env := containerEnv(t, find(t, render(t, "--set", "resources.limits.memory=512Mi"), "Deployment", "conformance"))
+	require.Equal(t, "483183616", env["GOMEMLIMIT"], "90 % of 512 MiB")
+}
+
+func TestLibChart_ProductionRequiresEgress(t *testing.T) {
+	t.Parallel()
+	out, err := exec.CommandContext(t.Context(), "helm", "template", "x", chartDir(t), "--set", "environment=prod",
+		"--set", "networkPolicy.egress.rules=null").CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(out), "egress must list the dependencies in prod")
+}

@@ -102,6 +102,30 @@ helm.sh/chart: {{ include "infrapilot-lib.chart" . }}
   value: {{ printf "%ds" (int $v.shutdown.timeoutSeconds) | quote }}
 {{- end -}}
 
+{{/*
+GOMEMLIMIT at ~90 % of a container's memory limit ("256Mi", "1Gi"), so the Go GC works harder before the kernel
+OOM-kills the container. Renders nothing for other units or no limit.
+*/}}
+{{- define "infrapilot-lib.gomemlimit" -}}
+{{- $m := toString (default "" .) -}}
+{{- $bytes := 0 -}}
+{{- if hasSuffix "Mi" $m -}}{{- $bytes = mul (atoi (trimSuffix "Mi" $m)) 943718 -}}
+{{- else if hasSuffix "Gi" $m -}}{{- $bytes = mul (atoi (trimSuffix "Gi" $m)) 966367641 -}}
+{{- end -}}
+{{- if gt (int64 $bytes) 0 }}
+- name: GOMEMLIMIT
+  value: {{ $bytes | quote }}
+{{- end -}}
+{{- end -}}
+
+{{/* Staging and prod must declare where pods may connect: an empty egress list would silently cut dependencies. */}}
+{{- define "infrapilot-lib.requireEgress" -}}
+{{- $v := .v -}}
+{{- if and $v.networkPolicy.enabled (has $v.environment (list "staging" "prod")) (not .rules) (not $v.networkPolicy.egress.extraRules) -}}
+{{- fail (printf "%s: egress must list the dependencies in %s (networkPolicy.egress.rules / cronJobs[].egress)" .what $v.environment) -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "infrapilot-lib.probe" -}}
 httpGet:
   path: {{ .path }}

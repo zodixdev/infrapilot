@@ -27,7 +27,9 @@ spec:
   dnsNames:
     - {{ $fullname }}
     - {{ printf "%s.%s.svc" $fullname $ns }}
+    {{- if $v.ports.grpc }}
     - {{ printf "%s-grpc.%s.svc" $fullname $ns }}
+    {{- end }}
   issuerRef:
     group: cert-manager.io
     kind: {{ $v.tls.issuerRef.kind }}

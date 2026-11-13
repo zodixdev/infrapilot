@@ -94,6 +94,22 @@ cannot be parsed keeps the old certificate in use).
 **Mitigate:** fix the issuer/cert-manager; force renewal with `cmctl renew <certificate>` (or delete the Secret);
 services pick up rotated files without a restart.
 
+## Workload certificates and the internal CA
+
+- Workload certificates (24 h, renewed at 16 h) are issued by the `infrapilot-internal-ca` ClusterIssuer; services
+  re-read rotated files without restarting (TLSCertificateExpiringSoon above).
+- **Rotating the CA:** the CA is a single root; every pod trusts the `ca.crt` its own Secret carries. Rotate with an
+  overlap: (1) issue the new CA, (2) distribute a bundle with old + new roots (trust-manager `Bundle`, mounted as the
+  CA file), (3) roll every workload so it trusts both, (4) switch the ClusterIssuer to the new CA and wait for all leaf
+  certificates to renew (≤ 24 h, or `cmctl renew --all`), (5) remove the old root from the bundle. CA expiry
+  monitoring belongs to the production PKI (M10); the local CA is valid for one year.
+
+## Helm hooks that outlive a release
+
+The migration Job's NetworkPolicy (`<release>-migrate`) is a pre-install/pre-upgrade hook kept until the next hook run
+(deleting it with the Job would race the Job). `helm uninstall` leaves it behind; remove it with
+`kubectl delete networkpolicy <release>-migrate` when retiring a service.
+
 ## Graceful shutdown sequence (what a rollout does)
 
 1. Kubernetes sends `SIGTERM`. `pkg/app` flips the readiness gate off: `/readyz` → 503, gRPC health → `NOT_SERVING`.
@@ -107,6 +123,11 @@ A request that must outlive a rollout is a bug; the client should retry idempote
 
 PodDisruptionBudgets (`maxUnavailable: 1`, unhealthy pods always evictable) are rendered only when at least two replicas are
 guaranteed; a single-replica PDB would block every node drain.
+
+**Drain bound:** readiness off → `SHUTDOWN_DELAY` (5 s) → drain for `SHUTDOWN_TIMEOUT` (25 s) → hard stop; the pod's grace
+period is delay + timeout + 5 s. Requests that run longer than ~25 s after shutdown starts are cut, although HTTP
+`WriteTimeout` and gRPC `MAX_CONNECTION_AGE_GRACE` allow 30 s: public read latency is two orders of magnitude below
+that, and long-running work belongs in jobs, not requests.
 
 ## Tenant context (Postgres)
 

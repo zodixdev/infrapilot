@@ -53,6 +53,10 @@ func (s *Service) CreateAPIKey(ctx context.Context, a Actor, org uuid.UUID, in C
 			if _, err := authorize(ctx, q, a, org, domain.PermAPIKeyManage, uuid.Nil); err != nil {
 				return CreatedAPIKey{}, uuid.Nil, err
 			}
+			// Share locks: a concurrent organization or project delete waits for this key and then revokes it.
+			if _, err := q.LockLiveOrganization(ctx, org); err != nil {
+				return CreatedAPIKey{}, uuid.Nil, notFound(err, "organization %s", org)
+			}
 			if err := lockLiveProject(ctx, q, org, in.ProjectID); err != nil {
 				return CreatedAPIKey{}, uuid.Nil, err
 			}

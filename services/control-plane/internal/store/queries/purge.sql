@@ -52,6 +52,11 @@ DELETE FROM idempotency_keys WHERE (organization_id, principal_id, key) IN (
     SELECT organization_id, principal_id, key FROM idempotency_keys
     WHERE created_at < now() - interval '24 hours' ORDER BY created_at LIMIT @lim);
 
+-- name: PurgeOrgCreateKeys :execrows
+DELETE FROM org_create_keys WHERE (principal_id, key) IN (
+    SELECT principal_id, key FROM org_create_keys
+    WHERE created_at < now() - interval '24 hours' ORDER BY created_at LIMIT @lim);
+
 -- name: PurgeUsers :execrows
 -- SKIP LOCKED: a user being added to an organization right now holds a key-share lock and is skipped.
 DELETE FROM users WHERE id IN (

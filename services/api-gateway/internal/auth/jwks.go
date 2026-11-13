@@ -51,6 +51,7 @@ type KeySet struct {
 	keys        map[string]jose.JSONWebKey
 	fetchedAt   time.Time
 	lastAttempt time.Time
+	installed   time.Time // start time of the fetch whose result is installed
 
 	sf        singleflight.Group
 	refreshes metric.Int64Counter
@@ -179,7 +180,8 @@ func (k *KeySet) lookup(kid string) (jose.JSONWebKey, bool) {
 
 func (k *KeySet) refresh(ctx context.Context, trigger string) error {
 	k.mu.Lock()
-	k.lastAttempt = k.now()
+	started := k.now()
+	k.lastAttempt = started
 	k.mu.Unlock()
 	keys, err := k.fetch(ctx)
 	result := "ok"
@@ -188,7 +190,10 @@ func (k *KeySet) refresh(ctx context.Context, trigger string) error {
 		k.log.WarnContext(ctx, "JWKS refresh failed; keeping the cached keys", slog.String("trigger", trigger), slog.Any("error", err))
 	} else {
 		k.mu.Lock()
-		k.keys, k.fetchedAt = keys, k.now()
+		// Interval and unknown-kid fetches may overlap; a slower, older fetch must not replace a newer key set.
+		if !started.Before(k.installed) {
+			k.keys, k.fetchedAt, k.installed = keys, k.now(), started
+		}
 		k.mu.Unlock()
 	}
 	k.refreshes.Add(ctx, 1, metric.WithAttributes(attribute.String("result", result), attribute.String("trigger", trigger)))

@@ -94,6 +94,20 @@ func (q *Queries) PurgeIdempotencyKeys(ctx context.Context, lim int32) (int64, e
 	return result.RowsAffected(), nil
 }
 
+const purgeOrgCreateKeys = `-- name: PurgeOrgCreateKeys :execrows
+DELETE FROM org_create_keys WHERE (principal_id, key) IN (
+    SELECT principal_id, key FROM org_create_keys
+    WHERE created_at < now() - interval '24 hours' ORDER BY created_at LIMIT $1)
+`
+
+func (q *Queries) PurgeOrgCreateKeys(ctx context.Context, lim int32) (int64, error) {
+	result, err := q.db.Exec(ctx, purgeOrgCreateKeys, lim)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const purgeOrganizationAPIKeys = `-- name: PurgeOrganizationAPIKeys :execrows
 DELETE FROM api_keys WHERE id IN (SELECT k.id FROM api_keys k WHERE k.organization_id = $1 LIMIT $2)
 `

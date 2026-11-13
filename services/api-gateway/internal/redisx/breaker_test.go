@@ -85,3 +85,24 @@ func TestBreaker_CallerCancellationIsNotAFailure(t *testing.T) {
 	}
 	require.NoError(t, s.do(t.Context(), func(context.Context) error { return nil }), "breaker still closed")
 }
+
+func TestBreaker_LateSuccessDoesNotCloseOpenBreaker(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1_700_000_000, 0)
+	s := newTestStore(t, &now)
+	ctx := t.Context()
+	release, started, done := make(chan struct{}), make(chan struct{}), make(chan error)
+	go func() {
+		done <- s.do(ctx, func(context.Context) error { close(started); <-release; return nil })
+	}()
+	<-started
+	for range 3 {
+		_ = s.do(ctx, func(context.Context) error { return errors.New("fail") })
+	}
+	close(release)
+	require.NoError(t, <-done)
+	calls := 0
+	require.ErrorIs(t, s.do(ctx, func(context.Context) error { calls++; return nil }), ErrUnavailable,
+		"a slow call admitted before the breaker opened must not close it")
+	require.Zero(t, calls)
+}
