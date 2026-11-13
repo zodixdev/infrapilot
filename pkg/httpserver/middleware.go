@@ -65,6 +65,28 @@ func RequestID() Middleware {
 	}
 }
 
+// EdgeRequestID is RequestID for the public edge: it always generates a fresh id (clients must not choose the
+// id internal services and audit records trust) and logs a well-formed client-supplied id as client_request_id.
+func EdgeRequestID() Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			u, err := uuid.NewV7()
+			if err != nil {
+				u = uuid.New()
+			}
+			id := u.String()
+			w.Header().Set(RequestIDHeader, id)
+			ctx := context.WithValue(r.Context(), requestIDKey{}, id)
+			attrs := []slog.Attr{slog.String("request_id", id)}
+			if client := r.Header.Get(RequestIDHeader); validRequestID(client) {
+				attrs = append(attrs, slog.String("client_request_id", client))
+			}
+			ctx = log.ContextWithAttrs(ctx, attrs...)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
 func validRequestID(id string) bool {
 	if id == "" || len(id) > 128 {
 		return false
@@ -251,6 +273,8 @@ type Options struct {
 	ServerName     string
 	// MaxBodyBytes for every route (BodyLimit); <= 0 disables the limit.
 	MaxBodyBytes int64
+	// Edge selects EdgeRequestID instead of RequestID (public-facing servers).
+	Edge bool
 }
 
 // Standard returns the default stack, outermost first:
@@ -261,7 +285,11 @@ func Standard(o Options) ([]Middleware, error) {
 	if err != nil {
 		return nil, err
 	}
-	mws := []Middleware{RequestID(), Tracing(o.TracerProvider, o.ServerName), metrics, AccessLog(o.Logger)}
+	reqID := RequestID()
+	if o.Edge {
+		reqID = EdgeRequestID()
+	}
+	mws := []Middleware{reqID, Tracing(o.TracerProvider, o.ServerName), metrics, AccessLog(o.Logger)}
 	if o.MaxBodyBytes > 0 {
 		mws = append(mws, BodyLimit(o.MaxBodyBytes))
 	}
@@ -270,25 +298,39 @@ func Standard(o Options) ([]Middleware, error) {
 
 // Problem is the RFC 9457 body written by WriteProblem (kept in sync with contracts/openapi/public.yaml).
 type Problem struct {
-	Type     string `json:"type"`
-	Title    string `json:"title"`
-	Status   int    `json:"status"`
-	Detail   string `json:"detail,omitempty"`
-	Instance string `json:"instance,omitempty"`
-	Code     string `json:"code"`
-	TraceID  string `json:"trace_id"`
+	Type     string       `json:"type"`
+	Title    string       `json:"title"`
+	Status   int          `json:"status"`
+	Detail   string       `json:"detail,omitempty"`
+	Instance string       `json:"instance,omitempty"`
+	Code     string       `json:"code"`
+	TraceID  string       `json:"trace_id"`
+	Errors   []FieldError `json:"errors,omitempty"`
+}
+
+// FieldError is one field-level violation of a validation_failed problem.
+type FieldError struct {
+	Field   string `json:"field"`
+	Message string `json:"message"`
 }
 
 // WriteProblem writes an application/problem+json response.
 func WriteProblem(w http.ResponseWriter, r *http.Request, status int, code, title string) {
-	p := Problem{
-		Type:     "about:blank",
-		Title:    title,
-		Status:   status,
-		Instance: r.URL.Path,
-		Code:     code,
-		TraceID:  trace.SpanContextFromContext(r.Context()).TraceID().String(),
+	WriteProblemBody(w, r, Problem{Status: status, Code: code, Title: title})
+}
+
+// WriteProblemBody writes p, filling type, instance and trace id when unset.
+func WriteProblemBody(w http.ResponseWriter, r *http.Request, p Problem) {
+	if p.Type == "" {
+		p.Type = "about:blank"
 	}
+	if p.Instance == "" {
+		p.Instance = r.URL.Path
+	}
+	if p.TraceID == "" {
+		p.TraceID = trace.SpanContextFromContext(r.Context()).TraceID().String()
+	}
+	status := p.Status
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)

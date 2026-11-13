@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -433,4 +434,31 @@ func TestServer_ShutdownWithoutRunClosesListener(t *testing.T) {
 		_ = c.Close()
 	}
 	require.Error(t, err, "listener released even though Run never started")
+}
+
+func TestEdgeRequestID_NeverTrustsClientID(t *testing.T) {
+	t.Parallel()
+	var seen string
+	h := httpserver.EdgeRequestID()(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		seen = httpserver.RequestIDFromContext(r.Context())
+	}))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+	req.Header.Set(httpserver.RequestIDHeader, "client-chosen-id")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	require.NotEqual(t, "client-chosen-id", seen)
+	require.Equal(t, seen, rec.Header().Get(httpserver.RequestIDHeader))
+	_, err := uuid.Parse(seen)
+	require.NoError(t, err)
+}
+
+func TestWriteProblemBody_FieldErrors(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/x", nil)
+	rec := httptest.NewRecorder()
+	httpserver.WriteProblemBody(rec, req, httpserver.Problem{Status: 400, Code: "validation_failed", Title: "bad",
+		Errors: []httpserver.FieldError{{Field: "name", Message: "required"}}})
+	require.Equal(t, "application/problem+json", rec.Header().Get("Content-Type"))
+	require.JSONEq(t, `{"type":"about:blank","title":"bad","status":400,"instance":"/v1/x","code":"validation_failed",
+		"trace_id":"00000000000000000000000000000000","errors":[{"field":"name","message":"required"}]}`, rec.Body.String())
 }
