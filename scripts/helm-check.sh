@@ -10,16 +10,16 @@ helm template conformance tests/helm/conformance --namespace infrapilot-test --a
   go tool kubeconform -strict -summary -kubernetes-version "$K8S_VERSION" \
     -schema-location default \
     -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
-# Service charts: strict lint and schema validation as a production render (environment=prod, TLS on). Database
-# egress is environment-specific; a representative private range stands in for it here.
-prod=(--set environment=prod --set 'migration.egress[0].to[0].ipBlock.cidr=10.0.0.0/8'
-  --set 'networkPolicy.egress.extraRules[0].to[0].ipBlock.cidr=10.0.0.0/8' --set 'networkPolicy.egress.extraRules[0].ports[0].port=4317')
+# Service charts: strict lint and schema validation as a production render. Each chart's ci/prod-values.yaml names a
+# representative egress rule per dependency (the library refuses staging/prod renders without them); telemetry
+# egress is added the way environments add it (extraRules).
+otlp=(--set 'networkPolicy.egress.extraRules[0].to[0].ipBlock.cidr=10.0.0.0/8' --set 'networkPolicy.egress.extraRules[0].ports[0].port=4317')
 for chart in deploy/helm/*/; do
   name="$(basename "$chart")"
   [[ "$name" == infrapilot-lib ]] && continue
   helm dependency update "$chart" >/dev/null
-  helm lint --strict "$chart" "${prod[@]}"
-  helm template "$name" "$chart" --namespace infrapilot "${prod[@]}" \
+  helm lint --strict "$chart" -f "$chart/ci/prod-values.yaml" "${otlp[@]}"
+  helm template "$name" "$chart" --namespace infrapilot -f "$chart/ci/prod-values.yaml" "${otlp[@]}" \
     --api-versions monitoring.coreos.com/v1 --api-versions cert-manager.io/v1 |
     go tool kubeconform -strict -summary -kubernetes-version "$K8S_VERSION" \
       -schema-location default \

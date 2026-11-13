@@ -1,0 +1,12 @@
+# Representative production render for scripts/helm-check.sh: every dependency has an egress rule.
+environment: prod
+networkPolicy:
+  egress:
+    rules:
+      - to:
+          - podSelector: {matchLabels: {app.kubernetes.io/name: control-plane}}
+        ports: [{port: 9090, protocol: TCP}]
+      - to: [{ipBlock: {cidr: 10.20.1.0/24}}]   # Redis
+        ports: [{port: 6379, protocol: TCP}]
+      - to: [{ipBlock: {cidr: 10.20.2.0/24}}]   # identity provider (JWKS)
+        ports: [{port: 443, protocol: TCP}]

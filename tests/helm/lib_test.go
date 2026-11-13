@@ -382,7 +382,10 @@ func TestLibChart_DisabledPortsRenderNothing(t *testing.T) {
 func TestLibChart_GoMemLimitFollowsMemoryLimit(t *testing.T) {
 	t.Parallel()
 	env := containerEnv(t, find(t, render(t, "--set", "resources.limits.memory=512Mi"), "Deployment", "conformance"))
-	require.Equal(t, "483183616", env["GOMEMLIMIT"], "90 % of 512 MiB")
+	require.Equal(t, "483183820", env["GOMEMLIMIT"], "90 % of 512 MiB")
+	out, err := exec.CommandContext(t.Context(), "helm", "template", "x", chartDir(t), "--set", "resources.limits.memory=1Ti").CombinedOutput()
+	require.Error(t, err, "unknown units are refused, not silently ignored")
+	require.Contains(t, string(out), "use Ki, Mi, Gi, M or G")
 }
 
 func TestLibChart_ProductionRequiresEgress(t *testing.T) {
@@ -391,4 +394,14 @@ func TestLibChart_ProductionRequiresEgress(t *testing.T) {
 		"--set", "networkPolicy.egress.rules=null").CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(out), "egress must list the dependencies in prod")
+
+	out, err = exec.CommandContext(t.Context(), "helm", "template", "x", chartDir(t), "--set", "environment=prod",
+		"--set", "networkPolicy.egress.rules=null", "--set", "networkPolicy.egress.extraRules[0].ports[0].port=4317").CombinedOutput()
+	require.Error(t, err, "environment-wide rules (telemetry) do not stand in for the workload's dependencies")
+	require.Contains(t, string(out), "egress must list the dependencies")
+
+	out, err = exec.CommandContext(t.Context(), "helm", "template", "x", chartDir(t), "--set", "environment=prod",
+		"--set", "networkPolicy.enabled=false").CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(out), "networkPolicy.enabled=false is not allowed in prod")
 }

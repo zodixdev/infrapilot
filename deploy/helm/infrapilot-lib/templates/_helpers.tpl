@@ -109,8 +109,12 @@ OOM-kills the container. Renders nothing for other units or no limit.
 {{- define "infrapilot-lib.gomemlimit" -}}
 {{- $m := toString (default "" .) -}}
 {{- $bytes := 0 -}}
-{{- if hasSuffix "Mi" $m -}}{{- $bytes = mul (atoi (trimSuffix "Mi" $m)) 943718 -}}
-{{- else if hasSuffix "Gi" $m -}}{{- $bytes = mul (atoi (trimSuffix "Gi" $m)) 966367641 -}}
+{{- if hasSuffix "Mi" $m -}}{{- $bytes = div (mul (atoi (trimSuffix "Mi" $m)) 1048576 9) 10 -}}
+{{- else if hasSuffix "Gi" $m -}}{{- $bytes = div (mul (atoi (trimSuffix "Gi" $m)) 1073741824 9) 10 -}}
+{{- else if hasSuffix "Ki" $m -}}{{- $bytes = div (mul (atoi (trimSuffix "Ki" $m)) 1024 9) 10 -}}
+{{- else if hasSuffix "M" $m -}}{{- $bytes = div (mul (atoi (trimSuffix "M" $m)) 1000000 9) 10 -}}
+{{- else if hasSuffix "G" $m -}}{{- $bytes = div (mul (atoi (trimSuffix "G" $m)) 1000000000 9) 10 -}}
+{{- else if $m -}}{{- fail (printf "resources.limits.memory %q: use Ki, Mi, Gi, M or G" $m) -}}
 {{- end -}}
 {{- if gt (int64 $bytes) 0 }}
 - name: GOMEMLIMIT
@@ -121,8 +125,14 @@ OOM-kills the container. Renders nothing for other units or no limit.
 {{/* Staging and prod must declare where pods may connect: an empty egress list would silently cut dependencies. */}}
 {{- define "infrapilot-lib.requireEgress" -}}
 {{- $v := .v -}}
-{{- if and $v.networkPolicy.enabled (has $v.environment (list "staging" "prod")) (not .rules) (not $v.networkPolicy.egress.extraRules) -}}
+{{- if has $v.environment (list "staging" "prod") -}}
+{{- if not $v.networkPolicy.enabled -}}
+{{- fail (printf "networkPolicy.enabled=false is not allowed in %s (default deny, AGENTS.md section 8)" $v.environment) -}}
+{{- end -}}
+{{- /* Only the workload's own rules count: environment-wide extraRules (telemetry) say nothing about its dependencies. */ -}}
+{{- if not .rules -}}
 {{- fail (printf "%s: egress must list the dependencies in %s (networkPolicy.egress.rules / cronJobs[].egress)" .what $v.environment) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 

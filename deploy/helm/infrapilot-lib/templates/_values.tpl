@@ -24,8 +24,8 @@ strategy:
 command: []
 args: []
 env: []
-# Environment-specific variables appended after `env` (Helm replaces lists, so an environment's values file sets
-# these without repeating the chart's own env).
+# Environment-specific variables appended after `env` on the server container only (Helm replaces lists, so an
+# environment's values file sets these without repeating the chart's own env). Jobs declare their env per job.
 extraEnv: []
 envFrom: []
 # Container ports by name. Set http or grpc to 0 for services without that listener (null is dropped by Helm
