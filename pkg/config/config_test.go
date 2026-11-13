@@ -104,6 +104,17 @@ func TestCommon_Validate(t *testing.T) {
 		{"metrics push without endpoint", map[string]string{"TELEMETRY_METRICS_PUSH": "true"}, "TELEMETRY_METRICS_PUSH"},
 		{"insecure otlp in prod", map[string]string{"ENVIRONMENT": "prod", "OTEL_EXPORTER_OTLP_ENDPOINT": "c:4317", "OTEL_EXPORTER_OTLP_INSECURE": "true"}, "OTEL_EXPORTER_OTLP_INSECURE"},
 		{"reflection in prod", map[string]string{"ENVIRONMENT": "prod", "GRPC_REFLECTION": "true"}, "GRPC_REFLECTION"},
+		{"logs push without endpoint", map[string]string{"TELEMETRY_LOGS_PUSH": "true"}, "TELEMETRY_LOGS_PUSH"},
+		{"endpoint with bad scheme", map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "grpc://c:4317"}, "OTEL_EXPORTER_OTLP_ENDPOINT"},
+		{"endpoint without port", map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "collector"}, "OTEL_EXPORTER_OTLP_ENDPOINT"},
+		{"unlimited grpc streams", map[string]string{"GRPC_MAX_CONCURRENT_STREAMS": "0"}, "GRPC_MAX_CONCURRENT_STREAMS"},
+		{"admin on http port", map[string]string{"ADMIN_ADDR": ":8080"}, "must differ"},
+		{"half tls", map[string]string{"GRPC_TLS_CERT_FILE": "/tls/tls.crt"}, "set together"},
+		{"zero body limit", map[string]string{"HTTP_MAX_BODY_BYTES": "0"}, "HTTP_MAX_BODY_BYTES"},
+		{"prod without grpc tls", map[string]string{"ENVIRONMENT": "prod"}, "GRPC_TLS_CERT_FILE is required in prod"},
+		{"staging pprof without ack", map[string]string{"ENVIRONMENT": "staging", "ADMIN_PPROF": "true"}, "ADMIN_PPROF_PROD_ACK"},
+		{"staging text logs", map[string]string{"ENVIRONMENT": "staging", "LOG_FORMAT": "text"}, "LOG_FORMAT must be json in staging"},
+		{"prod debug logs", map[string]string{"ENVIRONMENT": "prod", "LOG_LEVEL": "debug"}, "LOG_LEVEL=debug"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -127,4 +138,26 @@ func TestCommon_ValidateAggregatesAllProblems(t *testing.T) {
 	_, err := config.Load[serviceConfig](config.WithEnvironment(e))
 	require.ErrorContains(t, err, "LOG_LEVEL")
 	require.ErrorContains(t, err, "LOG_FORMAT")
+}
+
+func TestCommon_ValidProductionConfig(t *testing.T) {
+	t.Parallel()
+	e := minimalEnv()
+	for k, v := range map[string]string{
+		"ENVIRONMENT": "prod", "GRPC_TLS_CERT_FILE": "/tls/tls.crt", "GRPC_TLS_KEY_FILE": "/tls/tls.key",
+		"OTEL_EXPORTER_OTLP_ENDPOINT": "https://collector.observability:4317", "TELEMETRY_LOGS_PUSH": "true",
+		"ADMIN_PPROF": "true", "ADMIN_PPROF_PROD_ACK": "true",
+	} {
+		e[k] = v
+	}
+	cfg, err := config.Load[serviceConfig](config.WithEnvironment(e))
+	require.NoError(t, err)
+	require.Equal(t, 90*time.Second, cfg.Admin.WriteTimeout)
+	require.Equal(t, int64(1<<20), cfg.HTTP.MaxBodyBytes)
+
+	// A service without an internal API needs neither TLS nor a distinct gRPC port.
+	e = minimalEnv()
+	e["ENVIRONMENT"], e["GRPC_DISABLED"] = "prod", "true"
+	_, err = config.Load[serviceConfig](config.WithEnvironment(e))
+	require.NoError(t, err)
 }

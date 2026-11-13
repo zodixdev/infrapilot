@@ -16,15 +16,21 @@
 | Investigation reports | intelligence-service | PostgreSQL `intelligence` + S3 bundles | yes | 400d | strong |
 | Rate-limit counters, quota buckets, permission cache | gateway / ingestion | Redis | **no** (rebuildable) | TTL ≤ 1h | best-effort |
 
-Rules: one PostgreSQL cluster in prod, **one database + one DB role per service**. No cross-database queries.
+Rules: one PostgreSQL cluster in prod, **one database per service with three roles** (`<svc>_migrator` owner,
+`<svc>_app` runtime, `<svc>_batch` audited cross-tenant jobs — ADR-0018). No cross-database queries.
 Other services get data only through gRPC or events.
 
 ## 2. Multi-tenancy
 
 - Every tenant row has `organization_id UUID NOT NULL`, indexed first in composite indexes.
 - Repository layer requires `orgID` on every tenant-scoped method (compile-time: methods take `tenant.ID`).
-- **Defense in depth:** PostgreSQL Row-Level Security on tenant tables using `current_setting('app.org_id')`,
-  set with `SET LOCAL` inside each transaction. Service DB roles are not table owners and do not bypass RLS.
+- **Defense in depth:** PostgreSQL Row-Level Security on tenant tables with the policy
+  `organization_id = NULLIF(current_setting('app.org_id', true), '')::uuid` (fails closed when unset), set per
+  transaction with `set_config('app.org_id', $1, true)` by `pkg/postgres.WithTx`. The runtime role neither owns
+  tables nor bypasses RLS. The predicate is index-usable (`Index Cond` on `(organization_id, …)` indexes), so queries
+  need not repeat it for performance; repeating `organization_id = $1` is still encouraged for readability.
+- Unique constraints and foreign keys on tenant tables include `organization_id`; views use `security_invoker`.
+  `pgtest.AssertTenantSchema` enforces both in every service's integration suite (ADR-0018).
 - TimescaleDB/ClickHouse queries go only through query-service, which injects `organization_id` filters
   and enforces time-range and row limits.
 - Every service has a cross-tenant access test suite.
@@ -86,3 +92,21 @@ occurred_at · produced_at · producer · trace_parent · payload (Any)
 
 `goose` SQL migrations per service, run as a Kubernetes Job (Helm pre-upgrade hook) before rollout.
 Expand → migrate → contract: never drop/rename a column in the same release that stops using it.
+
+## 8. Connection budget
+
+Every pool is explicit and counted against the cluster's `max_connections` (Postgres reserves
+`superuser_reserved_connections`, default 3). The rule, checked whenever a service changes replicas or pool size:
+
+```
+Σ over services (hpa.maxReplicas × app MaxConns)  +  Σ batch pools  +  Σ migration jobs (1 each)
+  +  Keycloak (KC_DB_POOL_MAX_SIZE)  +  superuser_reserved  ≤  0.8 × max_connections
+```
+
+- Defaults: request pools 10 connections, migration pool 1, Keycloak 20 (compose), `max_connections` 200 (compose).
+- Each role also carries a hard cap (`ALTER ROLE … CONNECTION LIMIT n`) set at provisioning time in prod.
+- When the sum no longer fits, the answer is the CloudNativePG PgBouncer pooler (transaction mode) in front of
+  the cluster, not a larger `max_connections`. Server-side timeouts are role defaults (ADR-0018), so they survive
+  PgBouncer, which rejects or drops timeout startup parameters.
+- `PgPoolSaturated` / `PgPoolWaiting` alerts fire per pool before the budget becomes the bottleneck.
+

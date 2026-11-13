@@ -43,8 +43,9 @@ func RequestIDFromContext(ctx context.Context) string {
 	return id
 }
 
-// RequestID reuses a well-formed inbound X-Request-Id (≤ 128 printable chars) or generates a UUIDv7,
-// echoes it in the response and attaches it to the log context.
+// RequestID reuses a well-formed inbound X-Request-Id (1–128 chars of [A-Za-z0-9._:-]) or generates a
+// UUIDv7, echoes it in the response and attaches it to the log context. Internal services trust the id set
+// by the gateway; the public edge (M02 gateway) always generates its own and logs the client's separately.
 func RequestID() Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -69,19 +70,24 @@ func validRequestID(id string) bool {
 		return false
 	}
 	for _, c := range id {
-		if c < 0x21 || c > 0x7e {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '.', c == '_', c == ':', c == '-':
+		default:
 			return false
 		}
 	}
 	return true
 }
 
-// Recover converts panics into a 500 problem+json response and logs the stack. ErrAbortHandler is
-// re-panicked as net/http expects.
+// Recover converts panics into a 500 problem+json response and logs the stack. If the handler had already
+// started the response, the connection is aborted instead (a half-written body must not look complete).
+// http.ErrAbortHandler is re-panicked as net/http expects. Place it innermost so that metrics, access logs
+// and spans observe the 500.
 func Recover(logger *slog.Logger) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
+			rw := wrap(w)
 			defer func() {
 				rec := recover()
 				if rec == nil {
@@ -92,8 +98,29 @@ func Recover(logger *slog.Logger) Middleware {
 				}
 				logger.ErrorContext(ctx, "panic in http handler",
 					slog.Any("panic", fmt.Sprint(rec)), slog.String("stack", string(debug.Stack())))
-				WriteProblem(w, r, http.StatusInternalServerError, "internal", "Internal error")
+				if rw.wroteHeader {
+					panic(http.ErrAbortHandler)
+				}
+				WriteProblem(rw, r, http.StatusInternalServerError, "internal", "Internal error")
 			}()
+			next.ServeHTTP(rw, r)
+		})
+	}
+}
+
+// BodyLimit rejects bodies larger than maxBytes with 413: early when Content-Length says so, otherwise the
+// handler's read fails with *http.MaxBytesError once the limit is crossed.
+func BodyLimit(maxBytes int64) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.ContentLength > maxBytes {
+				WriteProblem(w, r, http.StatusRequestEntityTooLarge, "validation_failed",
+					"Request body exceeds "+strconv.FormatInt(maxBytes, 10)+" bytes")
+				return
+			}
+			if r.Body != nil && r.Body != http.NoBody {
+				r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+			}
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -108,15 +135,16 @@ func Tracing(tp trace.TracerProvider, serverName string) Middleware {
 			otelhttp.WithMeterProvider(noop.NewMeterProvider()),
 			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 				if p := routePattern(r); p != "" {
-					return r.Method + " " + p
+					return normalizeMethod(r.Method) + " " + p
 				}
-				return r.Method
+				return normalizeMethod(r.Method)
 			}),
 		)
 	}
 }
 
-// Metrics records RED metrics with low-cardinality labels: method, route pattern, status class/code.
+// Metrics records RED metrics with low-cardinality labels: method (standard methods, else _OTHER), route
+// pattern, status code. A panic passing through is recorded as 500 and re-raised.
 //
 //	http_server_requests_total{method,route,status}
 //	http_server_request_duration_seconds{method,route,status}
@@ -142,58 +170,94 @@ func Metrics(mp metric.MeterProvider) (Middleware, error) {
 			start := time.Now()
 			ctx := r.Context()
 			inflight.Add(ctx, 1)
-			rw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+			rw := wrap(w)
 			defer func() {
+				rec := recover()
+				status := rw.status
+				if rec != nil {
+					status = http.StatusInternalServerError
+				}
 				inflight.Add(ctx, -1)
 				attrs := metric.WithAttributes(
-					attribute.String("method", r.Method),
+					attribute.String("method", normalizeMethod(r.Method)),
 					attribute.String("route", routeOrUnmatched(r)),
-					attribute.String("status", strconv.Itoa(rw.status)),
+					attribute.String("status", strconv.Itoa(status)),
 				)
 				total.Add(ctx, 1, attrs)
 				dur.Record(ctx, time.Since(start).Seconds(), attrs)
+				if rec != nil {
+					panic(rec)
+				}
 			}()
 			next.ServeHTTP(rw, r)
 		})
 	}, nil
 }
 
-// AccessLog writes one structured line per request at Info (Warn for 5xx). Health probes are
-// logged at Debug to keep logs readable.
+// AccessLog writes one structured line per request at Info (Warn for 5xx, Debug for health/metrics
+// routes). A panic passing through is logged as 500 and re-raised.
 func AccessLog(logger *slog.Logger) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
-			rw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+			ctx := r.Context()
+			rw := wrap(w)
+			defer func() {
+				rec := recover()
+				status := rw.status
+				if rec != nil {
+					status = http.StatusInternalServerError
+				}
+				route := routeOrUnmatched(r)
+				level := slog.LevelInfo
+				switch {
+				case status >= http.StatusInternalServerError:
+					level = slog.LevelWarn
+				case route == "/healthz" || route == "/readyz" || route == "/metrics":
+					level = slog.LevelDebug
+				}
+				logger.LogAttrs(ctx, level, "http request",
+					slog.String("method", normalizeMethod(r.Method)),
+					slog.String("route", route),
+					slog.String("path", r.URL.Path),
+					slog.Int("status", status),
+					slog.Int64("bytes", rw.bytes),
+					slog.Duration("duration", time.Since(start)),
+					slog.String("remote", r.RemoteAddr),
+					slog.String("user_agent", r.UserAgent()),
+				)
+				if rec != nil {
+					panic(rec)
+				}
+			}()
 			next.ServeHTTP(rw, r)
-			level := slog.LevelInfo
-			switch {
-			case rw.status >= http.StatusInternalServerError:
-				level = slog.LevelWarn
-			case r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics":
-				level = slog.LevelDebug
-			}
-			logger.LogAttrs(r.Context(), level, "http request",
-				slog.String("method", r.Method),
-				slog.String("route", routeOrUnmatched(r)),
-				slog.String("path", r.URL.Path),
-				slog.Int("status", rw.status),
-				slog.Int64("bytes", rw.bytes),
-				slog.Duration("duration", time.Since(start)),
-				slog.String("remote", r.RemoteAddr),
-				slog.String("user_agent", r.UserAgent()),
-			)
 		})
 	}
 }
 
-// Standard returns the default stack: request id → recovery → tracing → metrics → access log.
-func Standard(logger *slog.Logger, tp trace.TracerProvider, mp metric.MeterProvider, serverName string) ([]Middleware, error) {
-	metrics, err := Metrics(mp)
+// Options for the standard middleware stack.
+type Options struct {
+	Logger         *slog.Logger
+	TracerProvider trace.TracerProvider
+	MeterProvider  metric.MeterProvider
+	ServerName     string
+	// MaxBodyBytes for every route (BodyLimit); <= 0 disables the limit.
+	MaxBodyBytes int64
+}
+
+// Standard returns the default stack, outermost first:
+// request id → tracing → metrics → access log → body limit → recovery.
+// Recovery is innermost so every outer layer observes the 500 it writes.
+func Standard(o Options) ([]Middleware, error) {
+	metrics, err := Metrics(o.MeterProvider)
 	if err != nil {
 		return nil, err
 	}
-	return []Middleware{RequestID(), Recover(logger), Tracing(tp, serverName), metrics, AccessLog(logger)}, nil
+	mws := []Middleware{RequestID(), Tracing(o.TracerProvider, o.ServerName), metrics, AccessLog(o.Logger)}
+	if o.MaxBodyBytes > 0 {
+		mws = append(mws, BodyLimit(o.MaxBodyBytes))
+	}
+	return append(mws, Recover(o.Logger)), nil
 }
 
 // Problem is the RFC 9457 body written by WriteProblem (kept in sync with contracts/openapi/public.yaml).
@@ -223,6 +287,21 @@ func WriteProblem(w http.ResponseWriter, r *http.Request, status int, code, titl
 	_ = json.NewEncoder(w).Encode(p) // status already sent; nothing more useful to do on failure
 }
 
+var standardMethods = map[string]bool{
+	http.MethodGet: true, http.MethodHead: true, http.MethodPost: true, http.MethodPut: true, http.MethodPatch: true,
+	http.MethodDelete: true, http.MethodOptions: true, http.MethodConnect: true, http.MethodTrace: true,
+}
+
+// normalizeMethod bounds label cardinality: clients can send arbitrary method tokens.
+func normalizeMethod(m string) string {
+	if standardMethods[m] {
+		return m
+	}
+	return "_OTHER"
+}
+
+// statusWriter records the final status and byte count. Each middleware layer wraps once; wrap reuses an
+// existing statusWriter so nested layers share the observation.
 type statusWriter struct {
 	http.ResponseWriter
 	status      int
@@ -230,8 +309,16 @@ type statusWriter struct {
 	wroteHeader bool
 }
 
+func wrap(w http.ResponseWriter) *statusWriter {
+	if sw, ok := w.(*statusWriter); ok {
+		return sw
+	}
+	return &statusWriter{ResponseWriter: w, status: http.StatusOK}
+}
+
 func (w *statusWriter) WriteHeader(code int) {
-	if !w.wroteHeader {
+	// 1xx responses are informational; the final status comes later.
+	if !w.wroteHeader && code >= 200 {
 		w.status = code
 		w.wroteHeader = true
 	}
@@ -239,15 +326,19 @@ func (w *statusWriter) WriteHeader(code int) {
 }
 
 func (w *statusWriter) Write(b []byte) (int, error) {
-	if !w.wroteHeader {
-		w.wroteHeader = true
-	}
+	w.wroteHeader = true
 	n, err := w.ResponseWriter.Write(b)
 	w.bytes += int64(n)
 	return n, err
 }
 
-// Unwrap lets http.ResponseController reach Flush/Hijack on the underlying writer.
+// Flush supports streaming handlers that type-assert http.Flusher.
+func (w *statusWriter) Flush() {
+	w.wroteHeader = true
+	_ = http.NewResponseController(w.ResponseWriter).Flush() // unsupported writers simply do not flush
+}
+
+// Unwrap lets http.ResponseController reach Hijack/SetDeadline on the underlying writer.
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // routePattern returns the matched ServeMux pattern without its method prefix ("GET /orgs/{id}" → "/orgs/{id}").

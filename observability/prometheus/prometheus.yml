@@ -29,9 +29,3 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["keycloak:9000"]
-  # Go services running on the host during development (make run) expose /metrics on their admin port.
-  - job_name: host-services
-    static_configs:
-      - targets: ["host.docker.internal:8081"]
-        labels:
-          source: host

@@ -1,0 +1,92 @@
+# promtool unit tests for observability/prometheus/rules/go-service.yaml (run by scripts/obs-check.sh).
+rule_files:
+  - ../rules/go-service.yaml
+evaluation_interval: 1m
+
+tests:
+  - name: not-ready and dependency alerts fire, healthy service stays quiet
+    interval: 1m
+    input_series:
+      - series: 'health_ready{job="api",instance="api-0"}'
+        values: '1 1 0x10'
+      - series: 'health_ready{job="ok",instance="ok-0"}'
+        values: '1x12'
+      - series: 'health_check_up{job="api",instance="api-0",check="postgres"}'
+        values: '1 1 0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ServiceNotReady
+        exp_alerts:
+          - exp_labels: { severity: critical, job: api, instance: api-0 }
+            exp_annotations:
+              summary: "api/api-0 has reported not-ready for 5 minutes"
+              runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#servicenotready
+      - eval_time: 10m
+        alertname: DependencyCheckFailing
+        exp_alerts:
+          - exp_labels: { severity: warning, job: api, instance: api-0, check: postgres }
+            exp_annotations:
+              summary: "Dependency check postgres failing on api/api-0"
+              runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#dependencycheckfailing
+
+  - name: a service that stops pushing is detected
+    interval: 1m
+    input_series:
+      - series: 'health_ready{job="api",instance="api-0"}'
+        values: '1x10 _x20'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: ServiceTelemetryAbsent
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: ServiceTelemetryAbsent
+        exp_alerts:
+          - exp_labels: { severity: critical, job: api }
+            exp_annotations:
+              summary: "api stopped pushing telemetry"
+              runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#servicetelemetryabsent
+
+  - name: burn-rate pages on sustained errors, error-rate alert ignores idle services
+    interval: 1m
+    input_series:
+      # 10 req/s, 6.7 % errors from t=0: burns ~67x the 0.1 % budget.
+      - series: 'http_server_requests_total{job="api",status="200"}'
+        values: '0+560x90'
+      - series: 'http_server_requests_total{job="api",status="500"}'
+        values: '0+40x90'
+      # Idle service: 1 failing request out of 2 in the first minutes (0.03 req/s): no traffic, no page.
+      - series: 'http_server_requests_total{job="idle",status="200"}'
+        values: '0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'http_server_requests_total{job="idle",status="500"}'
+        values: '0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: HttpErrorBudgetBurnFast
+        exp_alerts:
+          - exp_labels: { severity: critical, slo: availability, job: api }
+            exp_annotations:
+              summary: "api is burning its 99.9 % availability budget 14x too fast"
+              runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#httperrorbudgetburn
+      - eval_time: 15m
+        alertname: HttpHighErrorRate
+        exp_alerts:
+          - exp_labels: { severity: critical, job: api }
+            exp_annotations:
+              summary: "api: more than 5% of HTTP responses are 5xx"
+              runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#httphigherrorrate
+
+  - name: scrape-down alert only covers InfraPilot targets
+    interval: 1m
+    input_series:
+      - series: 'up{job="conformance",instance="10.0.0.1:8081",app_kubernetes_io_part_of="infrapilot"}'
+        values: '0x10'
+      - series: 'up{job="keycloak",instance="keycloak:9000"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: ServiceTargetDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: conformance, instance: "10.0.0.1:8081", app_kubernetes_io_part_of: infrapilot }
+            exp_annotations:
+              summary: "Scrape target conformance/10.0.0.1:8081 is down"
+              runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#servicetargetdown

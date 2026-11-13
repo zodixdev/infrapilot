@@ -26,7 +26,16 @@ Option 1, implemented in `pkg/telemetry`:
   `TELEMETRY_METRICS_PUSH=true` and `OTEL_EXPORTER_OTLP_ENDPOINT` is set (spec-defined names keep their OTel spelling; InfraPilot-specific ones use `TELEMETRY_`). The Prometheus registry also registers
   `collectors.NewGoCollector()` and `NewProcessCollector()` so standard `go_*`/`process_*` series exist.
 - One `sdktrace.TracerProvider` with parent-based ratio sampling; batch OTLP/gRPC exporter when the endpoint is set.
-- Logs are JSON on stdout with `trace_id`/`span_id` (pkg/log); the compose/k8s log pipeline ships them to Loki.
+- Logs are JSON on stdout with `trace_id`/`span_id` (pkg/log) **and**, when `TELEMETRY_LOGS_PUSH=true`, exported
+  over OTLP through the slog bridge (`otelslog`) to the collector's logs pipeline → Loki. Redaction runs once, before
+  fan-out, so both destinations receive the same scrubbed record. OTLP was chosen over tailing container logs
+  (filelog/Alloy) because the same pipeline then works from compose, kind and prod without node-level agents;
+  stdout remains for `kubectl logs` and as the fallback when the collector is down. The batch processor bounds memory
+  and drops on overflow rather than blocking request goroutines.
+- Runtime metrics come from the standard client_golang Go and process collectors in their own registry: served on
+  `/metrics` and bridged into the OTLP push (`contrib/bridges/prometheus`), so `go_goroutines`,
+  `process_resident_memory_bytes`, … carry the same names on both paths. The OTel runtime instrumentation is not used
+  (it duplicated these series under other names).
 - Resource attributes: `service.name`, `service.version`, `service.instance.id` (hostname/pod), `deployment.environment.name`.
 - The collector config in `observability/` accepts OTLP (traces + metrics), remote-writes metrics to Prometheus
   (`--web.enable-remote-write-receiver`) and sends traces to Tempo. In Kubernetes, Prometheus scrapes via
@@ -36,10 +45,13 @@ Option 1, implemented in `pkg/telemetry`:
 - Good: metrics survive a collector outage; `up` and scrape duration are available; dashboards use untranslated names;
   the same binary works in compose, kind and prod via configuration only.
 - Bad / trade-offs we accept: when push is enabled in an environment that also scrapes, the same series exist twice
-  with different job labels — the environment, not the service, owns the choice; runtime metrics appear twice under
-  different naming conventions (`go_*` from client_golang, `go.*`/`process.runtime.*` from OTel runtime instrumentation).
-- Verification: `pkg/telemetry` tests (exposition content, OTLP export to an in-process fake collector, shutdown
-  bounded by context); M01 e2e asserts the conformance service's traces in Tempo and metrics in Prometheus.
+  with different job labels — the environment, not the service, owns the choice. Pushed series have no `up`; a
+  `ServiceTelemetryAbsent` alert covers a service that stops pushing. The collector copies `service_name` onto every
+  datapoint but not the version (it would start new series on every release; `target_info` carries it).
+- Verification: `pkg/telemetry` tests (exposition content, OTLP traces/logs/metrics to an in-process fake collector
+  incl. runtime names on the push path, shutdown bounded by context); M01 e2e asserts traces in Tempo, metrics in
+  Prometheus and logs in Loki for the conformance release, and that every metric used by alert rules and dashboards is
+  emitted.
 
 ## Interview one-liner
 Pull for metrics because Kubernetes already solved discovery and liveness for scrapes; push for traces because

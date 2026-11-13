@@ -43,6 +43,9 @@ type Config struct {
 	IdleInTransactionSessionTimeout time.Duration
 	// RollbackTimeout bounds the rollback issued after an error or panic (default 5s).
 	RollbackTimeout time.Duration
+	// OmitSQLInSpans drops statement text from query spans (span names are always trimmed to the operation).
+	// Migration pools set it: DDL may contain literals such as role passwords.
+	OmitSQLInSpans bool
 }
 
 // Defaults fills zero values with production-safe defaults for request-serving pools.
@@ -89,6 +92,7 @@ func MigrationConfig(cfg Config) Config {
 	cfg.StatementTimeout = Disabled
 	cfg.LockTimeout = 3 * time.Second
 	cfg.IdleInTransactionSessionTimeout = 5 * time.Minute
+	cfg.OmitSQLInSpans = true
 	return cfg
 }
 
@@ -117,7 +121,9 @@ type openOptions struct {
 // WithLogger sets the logger.
 func WithLogger(l *slog.Logger) Option { return func(o *openOptions) { o.log = l } }
 
-// WithTracerProvider enables query spans via otelpgx (statement text trimmed to the first keyword).
+// WithTracerProvider enables query spans via otelpgx. Span names carry only the SQL operation; the
+// parameterized statement text is an attribute unless Config.OmitSQLInSpans is set. Bind parameters are
+// never recorded.
 func WithTracerProvider(tp trace.TracerProvider) Option { return func(o *openOptions) { o.tp = tp } }
 
 // WithMeterProvider exports pool statistics (ADR-0008: pool sizes are explicit and exposed as metrics).
@@ -157,7 +163,11 @@ func Open(ctx context.Context, cfg Config, opts ...Option) (*Pool, error) {
 	pc.ConnConfig.RuntimeParams["lock_timeout"] = millis(cfg.LockTimeout)
 	pc.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"] = millis(cfg.IdleInTransactionSessionTimeout)
 	if o.tp != nil {
-		pc.ConnConfig.Tracer = otelpgx.NewTracer(otelpgx.WithTracerProvider(o.tp))
+		topts := []otelpgx.Option{otelpgx.WithTracerProvider(o.tp)}
+		if cfg.OmitSQLInSpans {
+			topts = append(topts, otelpgx.WithDisableSQLStatementInAttributes())
+		}
+		pc.ConnConfig.Tracer = otelpgx.NewTracer(topts...)
 	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, pc)
@@ -197,14 +207,21 @@ func (p *Pool) BypassesRLS() bool { return p.bypassRLS }
 // Stat exposes pool statistics.
 func (p *Pool) Stat() *pgxpool.Stat { return p.pool.Stat() }
 
-// HealthCheck returns a readiness probe: a round trip on a pooled connection.
+// HealthCheck returns a readiness probe: a round trip on a pooled connection. When the pool is saturated
+// (every connection in use) and no connection frees up within the probe's deadline, the database is busy,
+// not unreachable: the probe reports healthy so that load spikes do not take every replica out of the
+// Service at once. Saturation is visible through the pool metrics and the PgPoolSaturated alert.
 func (p *Pool) HealthCheck() func(ctx context.Context) error {
 	return func(ctx context.Context) error {
 		var one int
-		if err := p.pool.QueryRow(ctx, "SELECT 1").Scan(&one); err != nil {
-			return fmt.Errorf("postgres: %w", err)
+		err := p.pool.QueryRow(ctx, "SELECT 1").Scan(&one)
+		if err == nil {
+			return nil
 		}
-		return nil
+		if s := p.pool.Stat(); errors.Is(err, context.DeadlineExceeded) && s.AcquiredConns() >= s.MaxConns() {
+			return nil
+		}
+		return fmt.Errorf("postgres: %w", err)
 	}
 }
 

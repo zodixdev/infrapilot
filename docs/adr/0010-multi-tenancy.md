@@ -10,6 +10,7 @@
 ## Decision
 Option 3. Two independent layers: repository methods require a tenant ID; RLS policies
 `USING (organization_id = current_setting('app.org_id')::uuid)` block anything that slips through.
+(The exact policy expression, role model and schema rules are refined in ADR-0018.)
 Per-tenant quotas (checks, agents, ingest rate, retention) prevent noisy neighbors.
 
 ## Consequences

@@ -108,19 +108,17 @@ func Validate(e *eventsv1.Envelope) error {
 	if e == nil {
 		return fmt.Errorf("%w: nil", ErrInvalid)
 	}
-	if _, err := uuid.Parse(e.GetEventId()); err != nil {
-		return fmt.Errorf("%w: event_id %q is not a UUID", ErrInvalid, e.GetEventId())
+	if !canonicalUUID(e.GetEventId()) {
+		return fmt.Errorf("%w: event_id %q is not a canonical UUID", ErrInvalid, truncate(e.GetEventId()))
 	}
 	if !eventTypePattern.MatchString(e.GetEventType()) {
-		return fmt.Errorf("%w: event_type %q does not match %s", ErrInvalid, e.GetEventType(), eventTypePattern)
+		return fmt.Errorf("%w: event_type %q does not match %s", ErrInvalid, truncate(e.GetEventType()), eventTypePattern)
 	}
 	if e.GetSchemaVersion() == 0 {
 		return fmt.Errorf("%w: schema_version must be >= 1", ErrInvalid)
 	}
-	if org := e.GetOrganizationId(); org != "" {
-		if _, err := uuid.Parse(org); err != nil {
-			return fmt.Errorf("%w: organization_id %q is not a UUID", ErrInvalid, org)
-		}
+	if org := e.GetOrganizationId(); org != "" && !canonicalUUID(org) {
+		return fmt.Errorf("%w: organization_id %q is not a canonical UUID", ErrInvalid, truncate(org))
 	}
 	if e.GetProducer() == "" {
 		return fmt.Errorf("%w: producer is required", ErrInvalid)
@@ -154,6 +152,25 @@ func ContextWithTrace(ctx context.Context, e *eventsv1.Envelope) context.Context
 	return propagation.TraceContext{}.Extract(ctx, propagation.MapCarrier{traceParentKey: e.GetTraceParent()})
 }
 
+// canonicalUUID accepts only the lowercase 8-4-4-4-12 form. uuid.Parse also accepts braces, urn:uuid: and
+// 32-hex spellings, which would let one id appear under several strings and defeat dedup keys and tenant
+// comparisons.
+func canonicalUUID(s string) bool {
+	u, err := uuid.Parse(s)
+	return err == nil && u.String() == s
+}
+
+// truncate bounds untrusted values echoed in error messages.
+func truncate(s string) string {
+	const limit = 64
+	if len(s) <= limit {
+		return s
+	}
+	return s[:limit] + "…"
+}
+
+// traceParentFromContext propagates only W3C traceparent; tracestate is intentionally not carried in the
+// envelope (vendor-specific, unbounded size).
 func traceParentFromContext(ctx context.Context) string {
 	carrier := propagation.MapCarrier{}
 	propagation.TraceContext{}.Inject(ctx, carrier)

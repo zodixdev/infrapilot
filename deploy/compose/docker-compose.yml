@@ -76,7 +76,7 @@ services:
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
       KC_DB_USERNAME: keycloak
       KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
-      KC_DB_POOL_MAX_SIZE: "20" # counted in the connection budget (docs/architecture/data.md §7)
+      KC_DB_POOL_MAX_SIZE: "20" # counted in the connection budget (docs/architecture/data.md §8)
       KC_HEALTH_ENABLED: "true"
       KC_METRICS_ENABLED: "true"
       KC_HTTP_MANAGEMENT_PORT: "9000"

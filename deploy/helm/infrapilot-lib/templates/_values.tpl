@@ -143,8 +143,8 @@ migration:
 # pods (and only those) in the NetworkPolicy. Test and CI environments turn it on.
 tests:
   enabled: false
-  curlImage: curlimages/curl:8.17.0
-  grpcHealthProbeImage: ghcr.io/grpc-ecosystem/grpc-health-probe:v0.4.40
+  curlImage: curlimages/curl:8.17.0@sha256:935d9100e9ba842cdb060de42472c7ca90cfe9a7c96e4dacb55e79e560b3ff40
+  grpcHealthProbeImage: ghcr.io/grpc-ecosystem/grpc-health-probe:v0.4.40@sha256:38d74888e537b1a4d581ffa9281dec6c24e55429f3a20d943c9a118e7f3fab7f
 {{- end -}}
 
 {{/* Merged values: chart values override library defaults. */}}

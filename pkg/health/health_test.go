@@ -139,3 +139,35 @@ func TestResult_JSONDurationInMilliseconds(t *testing.T) {
 	require.Contains(t, string(b), `"duration_ms":1.5`)
 	require.NotContains(t, string(b), `"Duration"`)
 }
+
+// TestRegistry_ContextIgnoringCheckDoesNotPileUp: a check that ignores its context occupies at most one
+// goroutine; later evaluations report it as still running (go-review M6).
+func TestRegistry_ContextIgnoringCheckDoesNotPileUp(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	var started atomic.Int32
+	r := health.NewRegistry(health.WithTimeout(10 * time.Millisecond))
+	r.SetReady(true)
+	r.Register("stuck", func(context.Context) error {
+		started.Add(1)
+		<-release // ignores ctx
+		return nil
+	})
+	for range 20 {
+		rep := r.Readiness(t.Context())
+		require.Equal(t, health.StatusDown, rep.Status)
+	}
+	require.Equal(t, int32(1), started.Load(), "only one goroutine for the stuck check")
+	require.Contains(t, r.Readiness(t.Context()).Checks["stuck"].Error, "still running")
+	close(release)
+	require.Eventually(t, func() bool { return r.Readiness(t.Context()).Status == health.StatusUp }, time.Second, 5*time.Millisecond)
+}
+
+func TestRegistry_ErrorsAreScrubbed(t *testing.T) {
+	t.Parallel()
+	r := health.NewRegistry()
+	r.Register("db", func(context.Context) error { return errors.New("dial postgres://app:hunter2@db:5432/x: refused") })
+	got := r.Readiness(t.Context()).Checks["db"].Error
+	require.NotContains(t, got, "hunter2")
+	require.Contains(t, got, "refused")
+}
