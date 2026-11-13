@@ -28,11 +28,11 @@ UPDATE api_keys SET revoked_at = coalesce(revoked_at, now())
 WHERE organization_id = @organization_id AND id = @id
 RETURNING *;
 
--- name: RevokeProjectAPIKeys :exec
+-- name: RevokeProjectAPIKeys :execrows
 UPDATE api_keys SET revoked_at = now()
 WHERE organization_id = @organization_id AND project_id = @project_id AND revoked_at IS NULL;
 
--- name: RevokeOrganizationAPIKeys :exec
+-- name: RevokeOrganizationAPIKeys :execrows
 UPDATE api_keys SET revoked_at = now()
 WHERE organization_id = @organization_id AND revoked_at IS NULL;
 

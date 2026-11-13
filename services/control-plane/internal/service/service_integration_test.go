@@ -293,3 +293,56 @@ func TestAPIKeysAndResources_Integration(t *testing.T) {
 		require.ErrorAs(t, err, &ve)
 	})
 }
+
+func TestSecurityRegressions_Integration(t *testing.T) {
+	e := newEnv(t)
+	ctx := t.Context()
+	alice, bob := e.user("alice"), e.user("bob")
+	orgA, orgB := e.org(alice, "A"), e.org(bob, "B")
+	projB := e.project(bob, orgB, "b-web")
+	projA := e.project(alice, orgA, "a-web")
+
+	t.Run("a decision for a project of another organization is never allowed", func(t *testing.T) {
+		for _, perm := range []domain.Permission{domain.PermResourceRead, domain.PermResourceWrite, domain.PermProjectRead} {
+			d, err := e.svc.CheckPermission(ctx, alice, orgA, perm, projB)
+			require.NoError(t, err)
+			require.False(t, d.Allowed, "%s on org B's project via org A", perm)
+		}
+		require.NoError(t, e.svc.DeleteProject(ctx, alice, orgA, projA))
+		d, err := e.svc.CheckPermission(ctx, alice, orgA, domain.PermResourceRead, projA)
+		require.NoError(t, err)
+		require.False(t, d.Allowed, "deleted projects grant nothing")
+	})
+
+	t.Run("only verified e-mail addresses can be added", func(t *testing.T) {
+		_, err := e.svc.ResolveActor(ctx, service.Principal{Kind: domain.ActorUser, Subject: "sub-squatter", Email: "victim@example.com", EmailVerified: false})
+		require.NoError(t, err)
+		_, err = e.svc.AddMember(ctx, alice, orgA, "victim@example.com", domain.RoleAdmin)
+		require.ErrorIs(t, err, domain.ErrNotFound, "an unverified claim must not attach a membership")
+		victim, err := e.svc.ResolveActor(ctx, service.Principal{Kind: domain.ActorUser, Subject: "sub-victim", Email: "victim@example.com", EmailVerified: true})
+		require.NoError(t, err)
+		m, err := e.svc.AddMember(ctx, alice, orgA, "VICTIM@example.com", domain.RoleViewer)
+		require.NoError(t, err, "the verified owner of the address is unaffected by the squatter")
+		require.Equal(t, victim.ID, m.UserID)
+	})
+
+	t.Run("identity-provider text is stored printable", func(t *testing.T) {
+		u, err := e.svc.ResolveActor(ctx, service.Principal{Kind: domain.ActorUser, Subject: "sub-evil", Email: "evil@example.com",
+			EmailVerified: true, DisplayName: "Eve\u202e\x1b[31mlyn"})
+		require.NoError(t, err)
+		m, err := e.svc.AddMember(ctx, alice, orgA, "evil@example.com", domain.RoleViewer)
+		require.NoError(t, err)
+		require.Equal(t, u.ID, m.UserID)
+		require.Equal(t, "Eve[31mlyn", m.DisplayName)
+	})
+
+	t.Run("an idempotent replay of an organization create needs membership", func(t *testing.T) {
+		carol := e.user("carol")
+		o, err := e.svc.CreateOrganization(withKey(ctx, "c-org"), carol, service.CreateOrganizationInput{Name: "C"})
+		require.NoError(t, err)
+		dave := e.member(carol, o.ID, "dave", domain.RoleOwner)
+		require.NoError(t, e.svc.RemoveMember(ctx, dave, o.ID, carol.ID))
+		_, err = e.svc.CreateOrganization(withKey(ctx, "c-org"), carol, service.CreateOrganizationInput{Name: "C"})
+		require.ErrorIs(t, err, domain.ErrNotFound)
+	})
+}

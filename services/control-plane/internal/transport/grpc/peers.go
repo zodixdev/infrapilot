@@ -4,9 +4,10 @@ import (
 	cpv1 "github.com/zodixdev/infrapilot/gen/go/infrapilot/controlplane/v1"
 )
 
-// PeerRules is the control-plane allow-list (ADR-0025): the public-API services serve the edge only; the
-// authorization service also serves the internal services that pre-authorize requests (permissionCallers).
-func PeerRules(edge, permissionCallers []string) map[string][]string {
+// PeerRules is the control-plane allow-list (ADR-0025): every service serves the edge only. Internal callers of
+// CheckPermission are added by the milestone that introduces them, together with how they obtain a principal
+// (an ADR), because the principal interceptor accepts principals from edge peers only.
+func PeerRules(edge []string) map[string][]string {
 	edgeOnly := []string{
 		cpv1.OrganizationService_ServiceDesc.ServiceName,
 		cpv1.ProjectService_ServiceDesc.ServiceName,
@@ -19,22 +20,6 @@ func PeerRules(edge, permissionCallers []string) map[string][]string {
 	for _, svc := range edgeOnly {
 		rules["/"+svc+"/*"] = edge
 	}
-	rules[cpv1.AuthorizationService_CheckPermission_FullMethodName] = union(edge, permissionCallers)
-	// Resolving raw API keys is the edge's job alone.
-	rules[cpv1.AuthorizationService_AuthenticateApiKey_FullMethodName] = edge
+	rules["/"+cpv1.AuthorizationService_ServiceDesc.ServiceName+"/*"] = edge
 	return rules
-}
-
-func union(a, b []string) []string {
-	out := append([]string(nil), a...)
-	for _, x := range b {
-		found := false
-		for _, y := range out {
-			found = found || x == y
-		}
-		if !found {
-			out = append(out, x)
-		}
-	}
-	return out
 }

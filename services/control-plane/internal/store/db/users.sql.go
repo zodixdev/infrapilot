@@ -12,10 +12,11 @@ import (
 )
 
 const findUsersByEmail = `-- name: FindUsersByEmail :many
-SELECT id, subject, email, display_name, created_at, updated_at, last_seen_at FROM users WHERE lower(email) = lower($1) ORDER BY id LIMIT 2
+SELECT id, subject, email, display_name, email_verified, created_at, updated_at, last_seen_at FROM users WHERE lower(email) = lower($1) AND email_verified ORDER BY id LIMIT 2
 `
 
-// At most two rows: the caller only needs to know whether the address is unambiguous.
+// Verified addresses only (an unverified claim must never attach someone else's membership). At most two rows:
+// the caller only needs to know whether the address is unambiguous.
 func (q *Queries) FindUsersByEmail(ctx context.Context, email string) ([]User, error) {
 	rows, err := q.db.Query(ctx, findUsersByEmail, email)
 	if err != nil {
@@ -30,6 +31,7 @@ func (q *Queries) FindUsersByEmail(ctx context.Context, email string) ([]User, e
 			&i.Subject,
 			&i.Email,
 			&i.DisplayName,
+			&i.EmailVerified,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.LastSeenAt,
@@ -45,22 +47,25 @@ func (q *Queries) FindUsersByEmail(ctx context.Context, email string) ([]User, e
 }
 
 const upsertUser = `-- name: UpsertUser :one
-INSERT INTO users (id, subject, email, display_name)
-VALUES ($1, $2, $3, $4)
+INSERT INTO users (id, subject, email, display_name, email_verified)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (subject) DO UPDATE
-    SET email        = EXCLUDED.email,
-        display_name = EXCLUDED.display_name,
-        updated_at   = CASE WHEN (users.email, users.display_name) IS DISTINCT FROM (EXCLUDED.email, EXCLUDED.display_name)
-                            THEN now() ELSE users.updated_at END,
+    SET email          = EXCLUDED.email,
+        display_name   = EXCLUDED.display_name,
+        email_verified = EXCLUDED.email_verified,
+        updated_at     = CASE WHEN (users.email, users.display_name, users.email_verified)
+                                   IS DISTINCT FROM (EXCLUDED.email, EXCLUDED.display_name, EXCLUDED.email_verified)
+                              THEN now() ELSE users.updated_at END,
         last_seen_at = now()
-RETURNING id, subject, email, display_name, created_at, updated_at, last_seen_at
+RETURNING id, subject, email, display_name, email_verified, created_at, updated_at, last_seen_at
 `
 
 type UpsertUserParams struct {
-	ID          uuid.UUID
-	Subject     string
-	Email       string
-	DisplayName string
+	ID            uuid.UUID
+	Subject       string
+	Email         string
+	DisplayName   string
+	EmailVerified bool
 }
 
 // Creates the user on first sight of an OIDC subject; refreshes e-mail, name and last-seen otherwise.
@@ -70,6 +75,7 @@ func (q *Queries) UpsertUser(ctx context.Context, arg UpsertUserParams) (User, e
 		arg.Subject,
 		arg.Email,
 		arg.DisplayName,
+		arg.EmailVerified,
 	)
 	var i User
 	err := row.Scan(
@@ -77,6 +83,7 @@ func (q *Queries) UpsertUser(ctx context.Context, arg UpsertUserParams) (User, e
 		&i.Subject,
 		&i.Email,
 		&i.DisplayName,
+		&i.EmailVerified,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LastSeenAt,

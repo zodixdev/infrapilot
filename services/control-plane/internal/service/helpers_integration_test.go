@@ -32,7 +32,7 @@ func newEnv(t *testing.T) *env {
 func (e *env) user(name string) service.Actor {
 	e.t.Helper()
 	a, err := e.svc.ResolveActor(e.t.Context(), service.Principal{Kind: domain.ActorUser, Subject: "sub-" + name,
-		Email: name + "@example.com", DisplayName: name})
+		Email: name + "@example.com", EmailVerified: true, DisplayName: name})
 	require.NoError(e.t, err)
 	return a
 }

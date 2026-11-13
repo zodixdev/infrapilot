@@ -27,14 +27,19 @@ func (s *Service) AddMember(ctx context.Context, a Actor, org uuid.UUID, email s
 	var out domain.Member
 	err := s.pool.WithTx(ctx, org, func(ctx context.Context, tx pgx.Tx) error {
 		q := db.New(tx)
-		actorRole, err := actorRoleFor(ctx, q, a, org)
-		if err != nil {
+		if _, err := actorRoleFor(ctx, q, a, org); err != nil {
 			return err
 		}
 		owners, err := q.LockOwners(ctx, org)
 		if err != nil {
 			return fmt.Errorf("add member: %w", err)
 		}
+		// The actor's role may have changed while waiting for the owner locks; decide on the current one.
+		r, err := q.GetRole(ctx, db.GetRoleParams{OrganizationID: org, UserID: a.ID})
+		if err != nil {
+			return notFound(err, "organization %s", org)
+		}
+		actorRole := domain.Role(r)
 		if denied := domain.CheckMemberChange(domain.MemberChange{ActorRole: actorRole, New: role, Owners: len(owners)}); denied != nil {
 			return denied
 		}
@@ -44,7 +49,7 @@ func (s *Service) AddMember(ctx context.Context, a Actor, org uuid.UUID, email s
 		}
 		switch len(users) {
 		case 0:
-			return domain.NotFoundf("no user with this e-mail has signed in yet")
+			return domain.NotFoundf("no user with this verified e-mail has signed in yet")
 		case 1:
 		default:
 			return domain.Preconditionf("several accounts use this e-mail address")

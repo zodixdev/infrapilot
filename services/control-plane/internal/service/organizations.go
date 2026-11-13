@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -55,6 +56,10 @@ func (s *Service) CreateOrganization(ctx context.Context, a Actor, in CreateOrga
 			return toOrganization(&row), orgID, nil
 		},
 		func(ctx context.Context, q *db.Queries, id uuid.UUID) (domain.Organization, error) {
+			// The creator may have left or been removed since: a replay is a read and needs org.read.
+			if _, err := authorize(ctx, q, a, id, domain.PermOrgRead, uuid.Nil); err != nil {
+				return domain.Organization{}, err
+			}
 			row, err := q.GetOrganization(ctx, id)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return domain.Organization{}, domain.NotFoundf("organization %s was deleted", id)
@@ -167,10 +172,11 @@ func (s *Service) DeleteOrganization(ctx context.Context, a Actor, org uuid.UUID
 		if n == 0 {
 			return domain.NotFoundf("organization %s", org)
 		}
-		if err := q.RevokeOrganizationAPIKeys(ctx, org); err != nil {
+		revoked, err := q.RevokeOrganizationAPIKeys(ctx, org)
+		if err != nil {
 			return fmt.Errorf("delete organization: revoke keys: %w", err)
 		}
-		return audit(ctx, q, org, a, "org.deleted", "organization", org.String(), nil)
+		return audit(ctx, q, org, a, "org.deleted", "organization", org.String(), map[string]string{"revoked_api_keys": strconv.FormatInt(revoked, 10)})
 	})
 }
 

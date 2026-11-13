@@ -23,12 +23,14 @@ CREATE TABLE users (
     subject      TEXT        NOT NULL CHECK (char_length(subject) BETWEEN 1 AND 255),
     email        TEXT        NOT NULL CHECK (char_length(email) <= 320),
     display_name TEXT        NOT NULL DEFAULT '' CHECK (char_length(display_name) <= 200),
+    -- As asserted by the identity provider; only verified addresses are matched when adding members.
+    email_verified BOOLEAN   NOT NULL DEFAULT false,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX users_subject_key ON users (subject);
-CREATE INDEX users_email_idx ON users (lower(email));
+CREATE INDEX users_email_idx ON users (lower(email)) WHERE email_verified;
 CREATE INDEX users_last_seen_idx ON users (last_seen_at);
 
 -- Organizations are tenant rows keyed on their own id (ADR-0018); organization_id mirrors id so the uniform
@@ -214,7 +216,7 @@ DECLARE
 BEGIN
   -- Column-level UPDATE grants: the runtime role can change only what the use cases change.
   EXECUTE format('GRANT SELECT, INSERT ON users TO %I', app);
-  EXECUTE format('GRANT UPDATE (email, display_name, updated_at, last_seen_at) ON users TO %I', app);
+  EXECUTE format('GRANT UPDATE (email, display_name, email_verified, updated_at, last_seen_at) ON users TO %I', app);
   EXECUTE format('GRANT SELECT, INSERT ON organizations, projects, resources TO %I', app);
   EXECUTE format('GRANT UPDATE (name, updated_at, deleted_at) ON organizations TO %I', app);
   EXECUTE format('GRANT UPDATE (name, slug, description, updated_at, deleted_at) ON projects TO %I', app);

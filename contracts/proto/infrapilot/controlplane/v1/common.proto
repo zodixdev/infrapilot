@@ -60,4 +60,7 @@ message Principal {
   string organization_id = 6;
   string project_id = 7;
   repeated ApiKeyScope scopes = 8;
+  // True only when the identity provider asserted the e-mail as verified ("email_verified" claim). Members are
+  // added by verified e-mail only.
+  bool email_verified = 9;
 }

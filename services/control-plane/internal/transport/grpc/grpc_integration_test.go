@@ -62,7 +62,7 @@ func start(t *testing.T, opts ...pgtest.Option) *harness {
 		Addr: "127.0.0.1:0", MaxRecvMsgBytes: 1 << 20, ConnectionTimeout: 5 * time.Second, KeepaliveTime: 30 * time.Second,
 		KeepaliveTimeout: 10 * time.Second, MaxConcurrentStreams: 64,
 		TLSCertFile: srvCert.Cert, TLSKeyFile: srvCert.Key, TLSClientCAFile: ca.File,
-	}, grpcserver.WithPeerPolicy(grpcserver.PeerPolicy{Rules: cpgrpc.PeerRules([]string{gatewayID}, []string{workerID})}),
+	}, grpcserver.WithPeerPolicy(grpcserver.PeerPolicy{Rules: cpgrpc.PeerRules([]string{gatewayID})}),
 		grpcserver.WithUnaryInterceptors(cpgrpc.PrincipalInterceptor(svc, []string{gatewayID}, logger)))
 	require.NoError(t, err)
 	cpgrpc.NewServer(svc, logger).Register(srv.Registrar())
@@ -141,10 +141,10 @@ func TestGRPC_EndToEnd_Integration(t *testing.T) {
 		require.Equal(t, codes.Unauthenticated, status.Code(err))
 	})
 
-	t.Run("principal metadata from a non-edge workload is refused", func(t *testing.T) {
+	t.Run("non-edge workloads are refused", func(t *testing.T) {
 		authz := cpv1.NewAuthorizationServiceClient(h.worker)
 		_, err := authz.CheckPermission(ctx, &cpv1.CheckPermissionRequest{OrganizationId: orgID, Permission: cpv1.Permission_PERMISSION_ORG_READ})
-		require.Equal(t, codes.PermissionDenied, status.Code(err), "the worker may call CheckPermission but not act for a user")
+		require.Equal(t, codes.PermissionDenied, status.Code(err), "CheckPermission is edge-only until internal callers are defined")
 		_, err = cpv1.NewOrganizationServiceClient(h.worker).GetOrganization(ctx, &cpv1.GetOrganizationRequest{OrganizationId: orgID})
 		require.Equal(t, codes.PermissionDenied, status.Code(err), "public-API services serve the edge only")
 	})

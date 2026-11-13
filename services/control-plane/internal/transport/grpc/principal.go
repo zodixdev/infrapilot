@@ -57,7 +57,7 @@ func PrincipalInterceptor(svc *service.Service, edgeIdentities []string, logger 
 		if err := proto.Unmarshal([]byte(raw[0]), &pb); err != nil {
 			return nil, status.Error(codes.Unauthenticated, "malformed principal")
 		}
-		p := service.Principal{Subject: pb.GetSubject(), Email: pb.GetEmail(), DisplayName: pb.GetDisplayName()}
+		p := service.Principal{Subject: pb.GetSubject(), Email: pb.GetEmail(), EmailVerified: pb.GetEmailVerified(), DisplayName: pb.GetDisplayName()}
 		switch pb.GetKind() {
 		case cpv1.PrincipalKind_PRINCIPAL_KIND_USER:
 			p.Kind = domain.ActorUser

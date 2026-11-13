@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -147,7 +148,16 @@ func (s *Service) UpdateProject(ctx context.Context, a Actor, org, id uuid.UUID,
 			return notFound(err, "project %s", id)
 		}
 		out = toProject(&row)
-		return audit(ctx, q, org, a, "project.updated", "project", id.String(), nil)
+		changes := map[string]string{}
+		for field, v := range map[string]*string{"name": in.Name, "slug": in.Slug, "description": in.Description} {
+			if v != nil {
+				changes[field] = *v
+			}
+		}
+		if len(changes) == 0 {
+			return nil
+		}
+		return audit(ctx, q, org, a, "project.updated", "project", id.String(), changes)
 	})
 	return out, conflictOn(err, projectConflicts)
 }
@@ -166,13 +176,14 @@ func (s *Service) DeleteProject(ctx context.Context, a Actor, org, id uuid.UUID)
 		if n == 0 {
 			return domain.NotFoundf("project %s", id)
 		}
-		if err := q.SoftDeleteProjectResources(ctx, db.SoftDeleteProjectResourcesParams{OrganizationID: org, ProjectID: id}); err != nil {
+		if err = q.SoftDeleteProjectResources(ctx, db.SoftDeleteProjectResourcesParams{OrganizationID: org, ProjectID: id}); err != nil {
 			return fmt.Errorf("delete project resources: %w", err)
 		}
-		if err := q.RevokeProjectAPIKeys(ctx, db.RevokeProjectAPIKeysParams{OrganizationID: org, ProjectID: id}); err != nil {
+		revoked, err := q.RevokeProjectAPIKeys(ctx, db.RevokeProjectAPIKeysParams{OrganizationID: org, ProjectID: id})
+		if err != nil {
 			return fmt.Errorf("revoke project keys: %w", err)
 		}
-		return audit(ctx, q, org, a, "project.deleted", "project", id.String(), nil)
+		return audit(ctx, q, org, a, "project.deleted", "project", id.String(), map[string]string{"revoked_api_keys": strconv.FormatInt(revoked, 10)})
 	})
 }
 

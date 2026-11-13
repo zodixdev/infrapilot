@@ -278,8 +278,11 @@ type Principal struct {
 	OrganizationId string        `protobuf:"bytes,6,opt,name=organization_id,json=organizationId,proto3" json:"organization_id,omitempty"`
 	ProjectId      string        `protobuf:"bytes,7,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
 	Scopes         []ApiKeyScope `protobuf:"varint,8,rep,packed,name=scopes,proto3,enum=infrapilot.controlplane.v1.ApiKeyScope" json:"scopes,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// True only when the identity provider asserted the e-mail as verified ("email_verified" claim). Members are
+	// added by verified e-mail only.
+	EmailVerified bool `protobuf:"varint,9,opt,name=email_verified,json=emailVerified,proto3" json:"email_verified,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Principal) Reset() {
@@ -368,11 +371,18 @@ func (x *Principal) GetScopes() []ApiKeyScope {
 	return nil
 }
 
+func (x *Principal) GetEmailVerified() bool {
+	if x != nil {
+		return x.EmailVerified
+	}
+	return false
+}
+
 var File_infrapilot_controlplane_v1_common_proto protoreflect.FileDescriptor
 
 const file_infrapilot_controlplane_v1_common_proto_rawDesc = "" +
 	"\n" +
-	"'infrapilot/controlplane/v1/common.proto\x12\x1ainfrapilot.controlplane.v1\"\xc4\x02\n" +
+	"'infrapilot/controlplane/v1/common.proto\x12\x1ainfrapilot.controlplane.v1\"\xeb\x02\n" +
 	"\tPrincipal\x12=\n" +
 	"\x04kind\x18\x01 \x01(\x0e2).infrapilot.controlplane.v1.PrincipalKindR\x04kind\x12\x18\n" +
 	"\asubject\x18\x02 \x01(\tR\asubject\x12\x14\n" +
@@ -383,7 +393,8 @@ const file_infrapilot_controlplane_v1_common_proto_rawDesc = "" +
 	"\x0forganization_id\x18\x06 \x01(\tR\x0eorganizationId\x12\x1d\n" +
 	"\n" +
 	"project_id\x18\a \x01(\tR\tprojectId\x12?\n" +
-	"\x06scopes\x18\b \x03(\x0e2'.infrapilot.controlplane.v1.ApiKeyScopeR\x06scopes*`\n" +
+	"\x06scopes\x18\b \x03(\x0e2'.infrapilot.controlplane.v1.ApiKeyScopeR\x06scopes\x12%\n" +
+	"\x0eemail_verified\x18\t \x01(\bR\remailVerified*`\n" +
 	"\x04Role\x12\x14\n" +
 	"\x10ROLE_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +

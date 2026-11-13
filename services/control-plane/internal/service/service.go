@@ -11,8 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -55,11 +58,12 @@ func New(pool *postgres.Pool, opts ...Option) (*Service, error) {
 
 // Principal is the authenticated caller as asserted by the edge (ADR-0025).
 type Principal struct {
-	Kind        domain.ActorKind
-	Subject     string // users: OIDC subject
-	Email       string
-	DisplayName string
-	APIKeyID    uuid.UUID // API keys
+	Kind          domain.ActorKind
+	Subject       string // users: OIDC subject
+	Email         string
+	EmailVerified bool // the identity provider asserted the e-mail as verified
+	DisplayName   string
+	APIKeyID      uuid.UUID // API keys
 }
 
 // Actor is a resolved principal: a user record or an API key id.
@@ -106,10 +110,13 @@ func (s *Service) ResolveActor(ctx context.Context, p Principal) (Actor, error) 
 	if id, ok := s.users.get(p, s.now()); ok {
 		return Actor{Kind: domain.ActorUser, ID: id}, nil
 	}
-	email, name := truncate(p.Email, domain.MaxEmailLen), truncate(p.DisplayName, domain.MaxNameLen)
+	// Identity-provider claims are untrusted text shown in member lists and audit output: keep printable
+	// characters only and bound the length.
+	email, name := truncate(printable(p.Email), domain.MaxEmailLen), truncate(printable(p.DisplayName), domain.MaxNameLen)
 	var id uuid.UUID
 	err := s.pool.WithSystemTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		u, err := db.New(tx).UpsertUser(ctx, db.UpsertUserParams{ID: newID(), Subject: p.Subject, Email: email, DisplayName: name})
+		u, err := db.New(tx).UpsertUser(ctx, db.UpsertUserParams{ID: newID(), Subject: p.Subject, Email: email, DisplayName: name,
+			EmailVerified: p.EmailVerified && email == p.Email})
 		id = u.ID
 		return err
 	})
@@ -118,6 +125,16 @@ func (s *Service) ResolveActor(ctx context.Context, p Principal) (Actor, error) 
 	}
 	s.users.put(p, id, s.now())
 	return Actor{Kind: domain.ActorUser, ID: id}, nil
+}
+
+// printable drops control and format characters (incl. bidi overrides) and invalid UTF-8.
+func printable(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == utf8.RuneError || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 func truncate(s string, n int) string {
@@ -134,9 +151,22 @@ type grant struct {
 	keyProject uuid.UUID
 }
 
-// authorize checks perm for actor in org (and project, for project-scoped permissions) inside tx. Non-members
-// and keys of other organizations get NOT_FOUND so foreign ids reveal nothing (ADR-0022).
+// authorize checks perm for actor in org inside tx. When project is given it must be a live project of org,
+// for every kind of principal, so a decision about "project P in org A" can never be obtained for a project of
+// another organization (CheckPermission answers are cached by the edge). Non-members, keys of other
+// organizations and foreign projects get NOT_FOUND so ids reveal nothing (ADR-0022).
 func authorize(ctx context.Context, q *db.Queries, a Actor, org uuid.UUID, perm domain.Permission, project uuid.UUID) (grant, error) {
+	g, err := authorizeOrg(ctx, q, a, org, perm, project)
+	if err != nil || project == uuid.Nil {
+		return g, err
+	}
+	if _, err := q.GetProject(ctx, db.GetProjectParams{OrganizationID: org, ID: project}); err != nil {
+		return grant{}, notFound(err, "project %s", project)
+	}
+	return g, nil
+}
+
+func authorizeOrg(ctx context.Context, q *db.Queries, a Actor, org uuid.UUID, perm domain.Permission, project uuid.UUID) (grant, error) {
 	switch a.Kind {
 	case domain.ActorUser:
 		role, err := q.GetRole(ctx, db.GetRoleParams{OrganizationID: org, UserID: a.ID})
@@ -313,6 +343,7 @@ type userCache struct {
 type userEntry struct {
 	id          uuid.UUID
 	email, name string
+	verified    bool
 	at          time.Time
 }
 
@@ -324,7 +355,7 @@ func (c *userCache) get(p Principal, now time.Time) (uuid.UUID, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.entries[p.Subject]
-	if !ok || now.Sub(e.at) > c.ttl || e.email != p.Email || e.name != p.DisplayName {
+	if !ok || now.Sub(e.at) > c.ttl || e.email != p.Email || e.name != p.DisplayName || e.verified != p.EmailVerified {
 		return uuid.Nil, false
 	}
 	return e.id, true
@@ -336,5 +367,5 @@ func (c *userCache) put(p Principal, id uuid.UUID, now time.Time) {
 	if len(c.entries) >= c.max {
 		clear(c.entries) // bounded memory; refills from the database at one upsert per user
 	}
-	c.entries[p.Subject] = userEntry{id: id, email: p.Email, name: p.DisplayName, at: now}
+	c.entries[p.Subject] = userEntry{id: id, email: p.Email, name: p.DisplayName, verified: p.EmailVerified, at: now}
 }

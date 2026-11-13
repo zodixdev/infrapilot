@@ -289,17 +289,20 @@ func (q *Queries) RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) (Api
 	return i, err
 }
 
-const revokeOrganizationAPIKeys = `-- name: RevokeOrganizationAPIKeys :exec
+const revokeOrganizationAPIKeys = `-- name: RevokeOrganizationAPIKeys :execrows
 UPDATE api_keys SET revoked_at = now()
 WHERE organization_id = $1 AND revoked_at IS NULL
 `
 
-func (q *Queries) RevokeOrganizationAPIKeys(ctx context.Context, organizationID uuid.UUID) error {
-	_, err := q.db.Exec(ctx, revokeOrganizationAPIKeys, organizationID)
-	return err
+func (q *Queries) RevokeOrganizationAPIKeys(ctx context.Context, organizationID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeOrganizationAPIKeys, organizationID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
-const revokeProjectAPIKeys = `-- name: RevokeProjectAPIKeys :exec
+const revokeProjectAPIKeys = `-- name: RevokeProjectAPIKeys :execrows
 UPDATE api_keys SET revoked_at = now()
 WHERE organization_id = $1 AND project_id = $2 AND revoked_at IS NULL
 `
@@ -309,7 +312,10 @@ type RevokeProjectAPIKeysParams struct {
 	ProjectID      uuid.UUID
 }
 
-func (q *Queries) RevokeProjectAPIKeys(ctx context.Context, arg RevokeProjectAPIKeysParams) error {
-	_, err := q.db.Exec(ctx, revokeProjectAPIKeys, arg.OrganizationID, arg.ProjectID)
-	return err
+func (q *Queries) RevokeProjectAPIKeys(ctx context.Context, arg RevokeProjectAPIKeysParams) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeProjectAPIKeys, arg.OrganizationID, arg.ProjectID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

@@ -99,11 +99,12 @@ type Resource struct {
 }
 
 type User struct {
-	ID          uuid.UUID
-	Subject     string
-	Email       string
-	DisplayName string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	LastSeenAt  time.Time
+	ID            uuid.UUID
+	Subject       string
+	Email         string
+	DisplayName   string
+	EmailVerified bool
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	LastSeenAt    time.Time
 }

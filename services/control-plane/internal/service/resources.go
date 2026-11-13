@@ -76,11 +76,8 @@ func (s *Service) GetResource(ctx context.Context, a Actor, org, project, id uui
 }
 
 func getResource(ctx context.Context, q *db.Queries, a Actor, org, project, id uuid.UUID) (domain.Resource, error) {
-	if _, err := authorize(ctx, q, a, org, domain.PermResourceRead, project); err != nil {
+	if _, err := authorize(ctx, q, a, org, domain.PermResourceRead, project); err != nil { // also checks the project is live
 		return domain.Resource{}, err
-	}
-	if _, err := q.GetProject(ctx, db.GetProjectParams{OrganizationID: org, ID: project}); err != nil {
-		return domain.Resource{}, notFound(err, "project %s", project)
 	}
 	row, err := q.GetResource(ctx, db.GetResourceParams{OrganizationID: org, ProjectID: project, ID: id})
 	if err != nil {
@@ -102,11 +99,8 @@ func (s *Service) ListResources(ctx context.Context, a Actor, org, project uuid.
 	var rows []db.Resource
 	err := s.pool.WithTx(ctx, org, func(ctx context.Context, tx pgx.Tx) error {
 		q := db.New(tx)
-		if _, err := authorize(ctx, q, a, org, domain.PermResourceRead, project); err != nil {
+		if _, err := authorize(ctx, q, a, org, domain.PermResourceRead, project); err != nil { // also checks the project is live
 			return err
-		}
-		if _, err := q.GetProject(ctx, db.GetProjectParams{OrganizationID: org, ID: project}); err != nil {
-			return notFound(err, "project %s", project)
 		}
 		var err error
 		if kind == "" {

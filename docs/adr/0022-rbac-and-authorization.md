@@ -56,6 +56,18 @@ the full key is returned once. Keys may carry an expiry; revocation is a timesta
 - Resource lookups across tenants return `NOT_FOUND`, never `PERMISSION_DENIED`, so IDs from another org reveal
   nothing.
 
+**Adding members.** Owners/admins add users who have signed in at least once, by **verified** e-mail address
+(the identity provider's `email_verified` claim, stored per user; unverified addresses never match). This lets an
+organization admin learn whether an address has an account and attach that user without an acceptance step;
+accepted for M02 with these mitigations: verified addresses only, a per-user rate limit on membership changes at
+the gateway (ADR-0026), every addition audited, and members may leave at any time. An invitation flow (pending
+invite accepted by the invitee) replaces direct adds when the dashboard ships (M07).
+
+**Who may call `CheckPermission`.** Only the edge in M02. A principal is accepted from edge peers only (ADR-0025),
+so internal services that need decisions (M03+) come with an ADR that defines how they obtain a principal.
+Whenever a decision names a project, the project must be a live project of the named organization, whatever the
+principal kind, so a cached decision can never cover another tenant's project.
+
 ## Consequences
 - Good: one written matrix drives the domain table, the gRPC matrix test and the API matrix test; owner lockout is
   impossible; API keys cannot escalate.
