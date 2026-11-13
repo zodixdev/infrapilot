@@ -88,6 +88,9 @@ func TestNew_Rejects(t *testing.T) {
 		{"bad org id", func(p *envelope.Params) { p.OrganizationID = "acme" }, nil, "organization_id"},
 		{"missing producer", func(p *envelope.Params) { p.Producer = "" }, nil, "producer"},
 		{"bad explicit id", func(*envelope.Params) {}, []envelope.Option{envelope.WithID("not-a-uuid")}, "event_id"},
+		{"braced id", func(*envelope.Params) {}, []envelope.Option{envelope.WithID("{0192f7a0-3c1e-7c9a-9d41-9a1f0f3b2c11}")}, "canonical"},
+		{"uppercase org", func(p *envelope.Params) { p.OrganizationID = "0192F7A0-3C1E-7C9A-9D41-9A1F0F3B2C11" }, nil, "canonical"},
+		{"urn org", func(p *envelope.Params) { p.OrganizationID = "urn:uuid:0192f7a0-3c1e-7c9a-9d41-9a1f0f3b2c11" }, nil, "canonical"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

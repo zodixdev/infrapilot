@@ -17,13 +17,13 @@ processors:
     send_batch_size: 1024
     send_batch_max_size: 2048
     timeout: 2s
-  # Keep the resource attributes dashboards filter on as metric labels.
+  # Copy the low-cardinality resource attributes dashboards filter on onto every datapoint. The version is
+  # not copied (it would start new series on every release); it stays queryable through target_info.
   transform/metrics:
     metric_statements:
       - context: datapoint
         statements:
           - set(attributes["service_name"], resource.attributes["service.name"])
-          - set(attributes["service_version"], resource.attributes["service.version"])
           - set(attributes["deployment_environment"], resource.attributes["deployment.environment.name"])
 
 exporters:

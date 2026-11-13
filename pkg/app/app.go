@@ -1,5 +1,5 @@
-// Package app runs a service's components with ordered startup and graceful, deadline-bounded
-// shutdown (AGENTS.md §5: readiness → false, stop intake, drain with deadline, close in reverse order).
+// Package app runs a service's components with ordered startup and graceful, deadline-bounded shutdown
+// (AGENTS.md §5: readiness → false, stop intake, drain with deadline, close clients in reverse order).
 package app
 
 import (
@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"sync"
 	"syscall"
 	"time"
@@ -16,28 +17,32 @@ import (
 
 // Component is a long-running part of a service (listener, consumer, background loop, resource).
 //
-// Run blocks until ctx is cancelled, Shutdown has completed, or a fatal error occurs; it must return
-// nil after a clean stop. Shutdown asks the component to stop accepting work and drain within ctx's
-// deadline; after it returns (or ctx expires) the component must hold no goroutines.
+// Run blocks until ctx is cancelled, Shutdown has completed, or a fatal error occurs; it must return nil
+// after a clean stop. Shutdown asks the component to stop accepting work and drain within ctx's deadline.
+// After Shutdown the App cancels the component's Run context and waits for Run to return before stopping
+// the next component, so a component never outlives the resources added before it.
 type Component interface {
 	Name() string
 	Run(ctx context.Context) error
 	Shutdown(ctx context.Context) error
 }
 
-// ReadinessGate is flipped by the App: true once every component has started, false as the very
-// first step of shutdown. health.Registry satisfies it.
+// ReadinessGate is flipped by the App: true once every component has started, false as the very first step
+// of shutdown. health.Registry satisfies it.
 type ReadinessGate interface {
 	SetReady(bool)
 }
 
 // Config controls shutdown timing.
 type Config struct {
-	// ShutdownDelay keeps serving after readiness turns false so that load balancers and kube-proxy
-	// stop routing new traffic before listeners close. Applied only on signal-initiated shutdown.
+	// ShutdownDelay keeps serving after readiness turns false so that load balancers and kube-proxy stop
+	// routing new traffic before listeners close. Applied only on signal-initiated shutdown.
 	ShutdownDelay time.Duration
-	// ShutdownTimeout bounds the drain of all components combined.
+	// ShutdownTimeout bounds the drain of all serving components combined.
 	ShutdownTimeout time.Duration
+	// CloseTimeout is a separate budget for resources added with Closer (pools, telemetry flush), so a drain
+	// that used its whole deadline cannot starve them (default 5s; the Helm grace period reserves it).
+	CloseTimeout time.Duration
 }
 
 // App orchestrates components.
@@ -66,8 +71,11 @@ func New(cfg Config, opts ...Option) (*App, error) {
 	if cfg.ShutdownTimeout <= 0 {
 		return nil, errors.New("app: ShutdownTimeout must be positive")
 	}
-	if cfg.ShutdownDelay < 0 {
-		return nil, errors.New("app: ShutdownDelay must not be negative")
+	if cfg.ShutdownDelay < 0 || cfg.CloseTimeout < 0 {
+		return nil, errors.New("app: ShutdownDelay and CloseTimeout must not be negative")
+	}
+	if cfg.CloseTimeout == 0 {
+		cfg.CloseTimeout = 5 * time.Second
 	}
 	a := &App{
 		cfg:     cfg,
@@ -83,35 +91,37 @@ func New(cfg Config, opts ...Option) (*App, error) {
 // Add registers components in start order.
 func (a *App) Add(c ...Component) { a.components = append(a.components, c...) }
 
-// ErrShutdownTimeout is returned when components did not drain within ShutdownTimeout.
+// ErrShutdownTimeout is returned when a component did not stop within its budget.
 var ErrShutdownTimeout = errors.New("app: shutdown deadline exceeded")
 
-type runResult struct {
-	name string
-	err  error
+type running struct {
+	c      Component
+	cancel context.CancelFunc
+	done   chan struct{}
+	err    error // written before done is closed
 }
 
 // Run starts every component, marks the service ready, then blocks until ctx is cancelled, a termination
 // signal arrives, or a component fails. It then performs the graceful shutdown sequence and returns the
-// first error encountered (nil on a clean, signal-initiated stop).
+// errors encountered (nil on a clean, signal-initiated stop).
 func (a *App) Run(ctx context.Context) error {
+	sigCtx, stopSignals := ctx, context.CancelFunc(func() {})
 	if len(a.signals) > 0 {
-		var stop context.CancelFunc
-		ctx, stop = signal.NotifyContext(ctx, a.signals...)
-		defer stop()
+		sigCtx, stopSignals = signal.NotifyContext(ctx, a.signals...)
 	}
-	runCtx, cancelRun := context.WithCancel(context.WithoutCancel(ctx))
-	defer cancelRun()
+	defer stopSignals()
 
-	results := make(chan runResult, len(a.components))
-	var wg sync.WaitGroup
-	for _, c := range a.components {
-		wg.Add(1)
-		go func(c Component) {
-			defer wg.Done()
-			err := recoverRun(runCtx, c)
-			results <- runResult{name: c.Name(), err: err}
-		}(c)
+	exited := make(chan *running, len(a.components))
+	rs := make([]*running, len(a.components))
+	for i, c := range a.components {
+		runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		r := &running{c: c, cancel: cancel, done: make(chan struct{})}
+		rs[i] = r
+		go func() {
+			r.err = recoverRun(runCtx, c)
+			close(r.done)
+			exited <- r
+		}()
 		a.log.InfoContext(ctx, "component started", slog.String("component", c.Name()))
 	}
 	if a.gate != nil {
@@ -119,82 +129,112 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	a.log.InfoContext(ctx, "service ready", slog.Int("components", len(a.components)))
 
-	// Wait for a stop trigger.
-	var cause error
-	signalled := false
-	select {
-	case <-ctx.Done():
-		signalled = true
-		a.log.InfoContext(ctx, "shutdown requested", slog.String("reason", context.Cause(ctx).Error()))
-	case r := <-results:
+	var errs []error
+	failed := func(r *running) {
 		if r.err != nil {
-			cause = fmt.Errorf("component %s failed: %w", r.name, r.err)
-			a.log.ErrorContext(ctx, "component failed, shutting down", slog.String("component", r.name), slog.Any("error", r.err))
+			errs = append(errs, fmt.Errorf("component %s failed: %w", r.c.Name(), r.err))
+			a.log.ErrorContext(ctx, "component failed, shutting down", slog.String("component", r.c.Name()), slog.Any("error", r.err))
 		} else {
-			cause = fmt.Errorf("component %s exited before shutdown", r.name)
-			a.log.ErrorContext(ctx, "component exited unexpectedly", slog.String("component", r.name))
+			errs = append(errs, fmt.Errorf("component %s exited before shutdown", r.c.Name()))
+			a.log.ErrorContext(ctx, "component exited unexpectedly", slog.String("component", r.c.Name()))
 		}
 	}
+
+	signalled := false
+	select {
+	case <-sigCtx.Done():
+		signalled = true
+		a.log.InfoContext(ctx, "shutdown requested", slog.String("reason", context.Cause(sigCtx).Error()))
+	case r := <-exited:
+		failed(r)
+	}
+	// Restore default signal handling: a second SIGTERM/SIGINT now terminates the process immediately.
+	stopSignals()
 
 	// 1. Stop advertising readiness so new traffic is routed elsewhere.
 	if a.gate != nil {
 		a.gate.SetReady(false)
 	}
-	// 2. Keep serving while the endpoint is withdrawn (only when we are healthy and were asked to stop).
+	// 2. Keep serving while the endpoint is withdrawn — unless a component fails meanwhile.
 	if signalled && a.cfg.ShutdownDelay > 0 {
 		a.log.InfoContext(ctx, "draining endpoint", slog.Duration("delay", a.cfg.ShutdownDelay))
 		timer := time.NewTimer(a.cfg.ShutdownDelay)
-		<-timer.C
-	}
-	// 3. Drain components in reverse order within one shared deadline.
-	stopCtx, cancelStop := context.WithTimeout(context.WithoutCancel(ctx), a.cfg.ShutdownTimeout)
-	defer cancelStop()
-	var errs []error
-	if cause != nil {
-		errs = append(errs, cause)
-	}
-	for i := len(a.components) - 1; i >= 0; i-- {
-		c := a.components[i]
-		start := time.Now()
-		if err := c.Shutdown(stopCtx); err != nil {
-			errs = append(errs, fmt.Errorf("shutdown %s: %w", c.Name(), err))
-			a.log.WarnContext(ctx, "component shutdown error", slog.String("component", c.Name()), slog.Any("error", err))
-		} else {
-			a.log.InfoContext(ctx, "component stopped", slog.String("component", c.Name()), slog.Duration("took", time.Since(start)))
-		}
-	}
-	// 4. Make Run return for components that only watch their context, then wait with the same deadline.
-	cancelRun()
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-stopCtx.Done():
-		errs = append(errs, ErrShutdownTimeout)
-		a.log.ErrorContext(ctx, "components did not drain in time", slog.Duration("timeout", a.cfg.ShutdownTimeout))
-	}
-	// Collect Run errors from components that finished (non-blocking drain of the channel).
-	for {
 		select {
-		case r := <-results:
-			if r.err != nil && (cause == nil || !errors.Is(cause, r.err)) {
-				errs = append(errs, fmt.Errorf("component %s: %w", r.name, r.err))
-			}
-			continue
-		default:
+		case <-timer.C:
+		case r := <-exited:
+			timer.Stop()
+			failed(r)
 		}
-		break
+	}
+	// 3. Stop components in reverse order. Serving components share the drain deadline; resources added with
+	// Closer share a separate close budget that starts when the first of them is reached.
+	drainCtx, cancelDrain := context.WithTimeout(context.WithoutCancel(ctx), a.cfg.ShutdownTimeout)
+	defer cancelDrain()
+	closeBudget := sync.OnceValues(func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.WithoutCancel(ctx), a.cfg.CloseTimeout)
+	})
+	defer func() { _, cancel := closeBudget(); cancel() }()
+	for i := len(rs) - 1; i >= 0; i-- {
+		r := rs[i]
+		stepCtx := drainCtx //nolint:contextcheck // both budgets derive from ctx via WithoutCancel (shutdown must outlive cancellation)
+		if isResource(r.c) {
+			stepCtx, _ = closeBudget()
+		}
+		start := time.Now()
+		if err := safeShutdown(stepCtx, r.c); err != nil {
+			errs = append(errs, fmt.Errorf("shutdown %s: %w", r.c.Name(), err))
+			a.log.WarnContext(ctx, "component shutdown error", slog.String("component", r.c.Name()), slog.Any("error", err))
+		}
+		r.cancel()
+		if !waitDone(stepCtx, r.done) {
+			errs = append(errs, fmt.Errorf("component %s: %w", r.c.Name(), ErrShutdownTimeout))
+			a.log.ErrorContext(ctx, "component did not stop in time", slog.String("component", r.c.Name()))
+			continue
+		}
+		if r.err != nil && !errors.Is(errors.Join(errs...), r.err) {
+			errs = append(errs, fmt.Errorf("component %s: %w", r.c.Name(), r.err))
+		}
+		a.log.InfoContext(ctx, "component stopped", slog.String("component", r.c.Name()), slog.Duration("took", time.Since(start)))
 	}
 	return errors.Join(errs...)
+}
+
+// waitDone reports whether done closed before ctx expired, preferring done when both are ready.
+func waitDone(ctx context.Context, done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	default:
+	}
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}
 }
 
 func recoverRun(ctx context.Context, c Component) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("panic: %v", r)
+			err = fmt.Errorf("panic: %v\n%s", r, debug.Stack())
 		}
 	}()
 	return c.Run(ctx)
+}
+
+func safeShutdown(ctx context.Context, c Component) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic during shutdown: %v\n%s", r, debug.Stack())
+		}
+	}()
+	return c.Shutdown(ctx)
 }
 
 // Func adapts start/stop functions into a Component. run must block until ctx is done; stop may be nil.
@@ -202,16 +242,22 @@ func Func(name string, run func(ctx context.Context) error, stop func(ctx contex
 	return &funcComponent{name: name, run: run, stop: stop}
 }
 
-// Closer wraps a resource that only needs closing on shutdown (DB pool, telemetry provider).
-// Closing happens at the component's position in the reverse order, after everything added later.
+// Closer wraps a resource that only needs closing on shutdown (DB pool, telemetry provider). Closers are
+// stopped in reverse order like everything else, but with the separate CloseTimeout budget.
 func Closer(name string, closeFn func(ctx context.Context) error) Component {
-	return Func(name, func(ctx context.Context) error { <-ctx.Done(); return nil }, closeFn)
+	return &funcComponent{name: name, run: func(ctx context.Context) error { <-ctx.Done(); return nil }, stop: closeFn, resource: true}
+}
+
+func isResource(c Component) bool {
+	f, ok := c.(*funcComponent)
+	return ok && f.resource
 }
 
 type funcComponent struct {
-	name string
-	run  func(ctx context.Context) error
-	stop func(ctx context.Context) error
+	name     string
+	run      func(ctx context.Context) error
+	stop     func(ctx context.Context) error
+	resource bool
 }
 
 func (f *funcComponent) Name() string { return f.name }

@@ -36,6 +36,11 @@ type Config struct {
 	// DefaultTimeout is applied to unary calls that arrive without a deadline (AGENTS.md §4: every call
 	// has a deadline). Streams are exempt (agent streams are long-lived by design).
 	DefaultTimeout time.Duration
+	// MaxConnectionAgeGrace lets in-flight RPCs finish after MaxConnectionAge (0 → KeepaliveTimeout).
+	MaxConnectionAgeGrace time.Duration
+	// TLS: server certificate and key (PEM files, re-read on every handshake so cert-manager rotation needs no
+	// restart). ClientCAFile additionally requires and verifies client certificates (mTLS). Empty = plaintext.
+	TLSCertFile, TLSKeyFile, TLSClientCAFile string
 }
 
 // Server is an app.Component wrapping *grpc.Server.
@@ -82,6 +87,16 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*Server, error) {
 	if cfg.MaxRecvMsgBytes <= 0 {
 		return nil, errors.New("grpcserver: MaxRecvMsgBytes must be positive")
 	}
+	if cfg.MaxConcurrentStreams == 0 {
+		return nil, errors.New("grpcserver: MaxConcurrentStreams must be positive (0 means unlimited in grpc-go)")
+	}
+	if cfg.MaxConnectionAgeGrace <= 0 {
+		cfg.MaxConnectionAgeGrace = cfg.KeepaliveTimeout
+	}
+	creds, err := transportCredentials(cfg)
+	if err != nil {
+		return nil, err
+	}
 	if cfg.ConnectionTimeout <= 0 || cfg.KeepaliveTime <= 0 || cfg.KeepaliveTimeout <= 0 {
 		return nil, errors.New("grpcserver: timeouts must be positive")
 	}
@@ -116,12 +131,15 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*Server, error) {
 			Timeout:          cfg.KeepaliveTimeout,
 			MaxConnectionAge: cfg.MaxConnectionAge,
 			// Grace keeps in-flight RPCs alive after the age limit while new streams are refused.
-			MaxConnectionAgeGrace: cfg.KeepaliveTimeout,
+			MaxConnectionAgeGrace: cfg.MaxConnectionAgeGrace,
 		}),
+		// Clients must not ping more often than every KeepaliveTime/2 (15 s by default) or they get GOAWAY
+		// too_many_pings; client keepalive settings in later milestones must respect this.
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             cfg.KeepaliveTime / 2,
 			PermitWithoutStream: true,
 		}),
+		grpc.Creds(creds),
 		grpc.StatsHandler(otelgrpc.NewServerHandler(
 			otelgrpc.WithTracerProvider(s.tp),
 			otelgrpc.WithMeterProvider(metricnoop.NewMeterProvider()),
@@ -169,6 +187,8 @@ func (s *Server) Run(ctx context.Context) error {
 // ctx expires, then force-stops remaining connections so Run returns in bounded time.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.health.Shutdown()
+	// Close our listener in case Run never started; Serve owns it otherwise (double close is harmless).
+	defer func() { _ = s.ln.Close() }()
 	done := make(chan struct{})
 	go func() {
 		s.srv.GracefulStop()

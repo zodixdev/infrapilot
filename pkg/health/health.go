@@ -11,10 +11,13 @@ import (
 	"net/http"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+
+	"github.com/zodixdev/infrapilot/pkg/log"
 )
 
 // Status of a check or of the whole service.
@@ -77,6 +80,9 @@ type entry struct {
 	name     string
 	check    Check
 	interval time.Duration
+	// inflight is set while a check goroutine runs. A check that ignores its context therefore occupies at
+	// most one goroutine: later evaluations report "still running" instead of starting another.
+	inflight atomic.Bool
 
 	mu   sync.Mutex
 	last Result
@@ -114,7 +120,8 @@ func NewRegistry(opts ...Option) *Registry {
 	return r
 }
 
-// Register adds a named check. Registering the same name twice replaces the previous check.
+// Register adds a named check. Registering the same name twice replaces the previous check. Periodic checks
+// must be registered before Run is called; Run only drives the checks it sees when it starts.
 func (r *Registry) Register(name string, c Check, opts ...CheckOption) {
 	e := &entry{name: name, check: c}
 	for _, o := range opts {
@@ -189,8 +196,9 @@ func (r *Registry) resultFor(ctx context.Context, e *entry) Result {
 		if e.seen {
 			return e.last
 		}
-		// First evaluation before Run has probed: evaluate inline so readiness is never wrongly "up".
-		res := r.evaluate(ctx, e)
+		// First evaluation before Run has probed: evaluate inline so readiness is never wrongly "up". The
+		// request context is detached so a disconnecting client cannot cache "down: context canceled".
+		res := r.evaluate(context.WithoutCancel(ctx), e)
 		e.last, e.seen = res, true
 		return res
 	}
@@ -201,11 +209,15 @@ func (r *Registry) evaluate(ctx context.Context, e *entry) Result {
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 	start := time.Now()
-	err := safeCheck(ctx, e.check)
+	err := safeCheck(ctx, e)
 	res := Result{Status: StatusUp, Duration: time.Since(start), CheckedAt: start}
 	if err != nil {
 		res.Status = StatusDown
-		res.Error = err.Error()
+		// Errors reach /readyz and logs: scrub credentials and cap the length.
+		res.Error = log.Scrub(err.Error())
+		if len(res.Error) > 512 {
+			res.Error = res.Error[:512] + "…"
+		}
 	}
 	r.recordCheck(ctx, e.name, res.Status == StatusUp)
 	return res
@@ -266,15 +278,22 @@ func levelFor(s Status) slog.Level {
 	return slog.LevelWarn
 }
 
-func safeCheck(ctx context.Context, c Check) error {
+// errStillRunning is reported while a previous evaluation of the same check has not returned yet.
+var errStillRunning = errors.New("previous evaluation still running")
+
+func safeCheck(ctx context.Context, e *entry) error {
+	if !e.inflight.CompareAndSwap(false, true) {
+		return errStillRunning
+	}
 	done := make(chan error, 1)
 	go func() {
+		defer e.inflight.Store(false)
 		defer func() {
 			if rec := recover(); rec != nil {
 				done <- errors.New("health check panicked")
 			}
 		}()
-		done <- c(ctx)
+		done <- e.check(ctx)
 	}()
 	select {
 	case err := <-done:

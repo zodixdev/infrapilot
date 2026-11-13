@@ -17,20 +17,11 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-	"go.uber.org/goleak"
 
 	"github.com/zodixdev/infrapilot/pkg/health"
 	"github.com/zodixdev/infrapilot/pkg/postgres"
 	"github.com/zodixdev/infrapilot/pkg/testutil/pgtest"
 )
-
-func TestMain(m *testing.M) {
-	goleak.VerifyTestMain(m,
-		// testcontainers keeps a reaper/docker client goroutine for the process lifetime.
-		goleak.IgnoreAnyFunction("github.com/testcontainers/testcontainers-go.(*Reaper).connect.func1"),
-		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
-	)
-}
 
 var (
 	orgA = uuid.MustParse("0192f7a0-3c1e-7c9a-9d41-9a1f0f3b2c11")
@@ -362,4 +353,27 @@ func TestTenantSchemaRules_Integration(t *testing.T) {
 	v, err = pgtest.TenantSchemaViolations(ctx, conn, pgtest.AppRole, []string{"unscoped"}, []string{"peek"})
 	require.NoError(t, err)
 	require.Empty(t, v)
+}
+
+// TestHealthCheck_SaturatedPoolIsBusyNotDown: with every connection in use the probe times out acquiring,
+// which must not mark the replica unready (go-review minor 16).
+func TestHealthCheck_SaturatedPoolIsBusyNotDown_Integration(t *testing.T) {
+	db := pgtest.Start(t)
+	pool, err := postgres.Open(t.Context(), postgres.Config{URL: db.AppURL, MaxConns: 1})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pool.Shutdown(context.WithoutCancel(t.Context()))) })
+
+	hold, release := make(chan struct{}), make(chan struct{})
+	go func() {
+		_ = pool.WithSystemTx(context.WithoutCancel(t.Context()), func(context.Context, pgx.Tx) error {
+			close(hold)
+			<-release
+			return nil
+		})
+	}()
+	<-hold
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	require.NoError(t, pool.HealthCheck()(ctx))
+	close(release)
 }

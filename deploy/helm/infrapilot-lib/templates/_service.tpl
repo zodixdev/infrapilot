@@ -136,6 +136,8 @@ spec:
       {{- include "infrapilot-lib.selectorLabels" . | nindent 6 }}
   namespaceSelector:
     matchNames: [{{ .Release.Namespace }}]
+  # Copied onto every scraped series (incl. `up`) as app_kubernetes_io_part_of; alerts select on it.
+  targetLabels: [app.kubernetes.io/part-of]
   endpoints:
     - port: {{ $v.serviceMonitor.port }}
       path: {{ $v.serviceMonitor.path }}

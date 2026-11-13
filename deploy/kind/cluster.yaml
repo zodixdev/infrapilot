@@ -1,15 +1,11 @@
 # Local Kubernetes cluster for deploying InfraPilot charts (ADR-0011). Created by `make cluster`.
+# Single node to fit laptop memory; Pod Security admission is on by default and `make deploy` labels the
+# test namespace `restricted`.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: infrapilot
 nodes:
   - role: control-plane
-    image: kindest/node:v1.34.0
-    kubeadmConfigPatches:
-      - |
-        kind: ClusterConfiguration
-        apiServer:
-          extraArgs:
-            enable-admission-plugins: NodeRestriction,PodSecurity
+    image: kindest/node:v1.34.0@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a
     labels:
       infrapilot.io/role: worker

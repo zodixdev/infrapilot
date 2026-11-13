@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +20,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 	"go.uber.org/goleak"
 
 	"github.com/zodixdev/infrapilot/pkg/health"
@@ -197,7 +201,7 @@ func TestMiddleware_RequestID(t *testing.T) {
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/", http.NoBody)
-	req.Header.Set(httpserver.RequestIDHeader, "bad id with spaces\n")
+	req.Header.Set(httpserver.RequestIDHeader, `<script>"x"</script>`)
 	h.ServeHTTP(rec, req)
 	require.NotEmpty(t, seen)
 	require.NotContains(t, seen, " ")
@@ -213,7 +217,7 @@ func TestMiddleware_MetricsUseRoutePattern(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	t.Cleanup(func() { _ = tp.Shutdown(context.WithoutCancel(t.Context())) })
 
-	mws, err := httpserver.Standard(log.Discard(), tp, mp, "test")
+	mws, err := httpserver.Standard(httpserver.Options{Logger: log.Discard(), TracerProvider: tp, MeterProvider: mp, ServerName: "test"})
 	require.NoError(t, err)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /orgs/{id}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
@@ -299,4 +303,134 @@ func TestServer_RunEndToEnd(t *testing.T) {
 	require.NoError(t, s.Shutdown(t.Context()), "idempotent")
 	_, err := net.DialTimeout("tcp", s.Addr().String(), 200*time.Millisecond)
 	require.Error(t, err, "listener closed")
+}
+
+// collectCounts returns http_server_requests_total by "method route status".
+func collectCounts(t *testing.T, reader *sdkmetric.ManualReader) map[string]int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(t.Context(), &rm))
+	counts := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "http_server_requests_total" {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			require.True(t, ok)
+			for _, dp := range sum.DataPoints {
+				method, _ := dp.Attributes.Value(attribute.Key("method"))
+				route, _ := dp.Attributes.Value(attribute.Key("route"))
+				status, _ := dp.Attributes.Value(attribute.Key("status"))
+				counts[method.AsString()+" "+route.AsString()+" "+status.AsString()] += dp.Value
+			}
+		}
+	}
+	return counts
+}
+
+func standardStack(t *testing.T, logger *slog.Logger, maxBody int64) (http.Handler, *sdkmetric.ManualReader, *http.ServeMux) {
+	t.Helper()
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.WithoutCancel(t.Context())) })
+	mws, err := httpserver.Standard(httpserver.Options{Logger: logger, TracerProvider: tracenoop.NewTracerProvider(),
+		MeterProvider: mp, ServerName: "t", MaxBodyBytes: maxBody})
+	require.NoError(t, err)
+	mux := http.NewServeMux()
+	return httpserver.Chain(mux, mws...), reader, mux
+}
+
+func TestStandard_PanicIsCountedAndLoggedAs500(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	logger, err := log.New(log.Config{Level: "info"}, &buf, "s", "v", "e")
+	require.NoError(t, err)
+	h, reader, mux := standardStack(t, logger, 0)
+	mux.HandleFunc("GET /v1/panic", func(http.ResponseWriter, *http.Request) { panic("boom") })
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/panic", http.NoBody))
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	require.Equal(t, int64(1), collectCounts(t, reader)["GET /v1/panic 500"], "panics are server errors in RED metrics")
+	require.Contains(t, buf.String(), `"msg":"http request"`, "the access log records the request")
+	require.Contains(t, buf.String(), `"status":500`)
+}
+
+func TestStandard_MethodLabelIsBounded(t *testing.T) {
+	t.Parallel()
+	h, reader, _ := standardStack(t, log.Discard(), 0)
+	for _, m := range []string{"FOO1", "FOO2", "PROPFIND"} {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(m, "/x", http.NoBody))
+	}
+	counts := collectCounts(t, reader)
+	require.Len(t, counts, 1, "%v", counts)
+	require.Equal(t, int64(3), counts["_OTHER unmatched 404"])
+}
+
+func TestStandard_BodyLimit(t *testing.T) {
+	t.Parallel()
+	h, _, mux := standardStack(t, log.Discard(), 16)
+	mux.HandleFunc("POST /echo", func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			httpserver.WriteProblem(w, r, http.StatusRequestEntityTooLarge, "validation_failed", "too large")
+			return
+		}
+		_, _ = w.Write(b)
+	})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader("small")))
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader(strings.Repeat("x", 64))))
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code, "declared Content-Length rejected up front")
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/echo", io.NopCloser(strings.NewReader(strings.Repeat("x", 64))))
+	req.ContentLength = -1 // chunked: limit enforced while reading
+	h.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+}
+
+func TestRecover_AbortsWhenResponseAlreadyStarted(t *testing.T) {
+	t.Parallel()
+	h := httpserver.Chain(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "partial")
+		panic("late")
+	}), httpserver.Recover(log.Discard()))
+	require.PanicsWithValue(t, http.ErrAbortHandler, func() {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", http.NoBody))
+	}, "a half-written body must not be completed with a problem document")
+}
+
+func TestStatusWriter_FlushAnd1xx(t *testing.T) {
+	t.Parallel()
+	h, reader, mux := standardStack(t, log.Discard(), 0)
+	mux.HandleFunc("GET /stream", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusEarlyHints)
+		_, _ = io.WriteString(w, "chunk")
+		if f, ok := w.(http.Flusher); ok { // asserted below through rec.Flushed
+			f.Flush()
+		}
+	})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stream", http.NoBody))
+	require.True(t, rec.Flushed)
+	require.Equal(t, int64(1), collectCounts(t, reader)["GET /stream 200"], "1xx is not the final status")
+}
+
+func TestServer_ShutdownWithoutRunClosesListener(t *testing.T) {
+	t.Parallel()
+	s, err := httpserver.New(t.Context(), testConfig(), http.NotFoundHandler())
+	require.NoError(t, err)
+	addr := s.Addr().String()
+	require.NoError(t, s.Shutdown(t.Context()))
+	c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+	if err == nil {
+		_ = c.Close()
+	}
+	require.Error(t, err, "listener released even though Run never started")
 }

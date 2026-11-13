@@ -9,10 +9,9 @@ ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 GO ?= go
 # Go-based tools are pinned as `tool` directives in tools/go.mod and run through `go tool`.
 GOTOOL := $(GO) tool
-GO_TOOLS := golangci-lint buf protoc-gen-go protoc-gen-go-grpc sqlc goose oapi-codegen kubeconform govulncheck gitleaks kind
+GO_TOOLS := golangci-lint buf protoc-gen-go protoc-gen-go-grpc sqlc goose oapi-codegen kubeconform govulncheck gitleaks kind yq
 # Go modules that contain code we lint and test (tools/ holds only tool directives).
 GO_MODULES := $(filter-out tools,$(notdir $(patsubst %/,%,$(dir $(wildcard */go.mod)))))
-ALL_GO_MODULES := $(notdir $(patsubst %/,%,$(dir $(wildcard */go.mod))))
 
 PROFILE ?= core
 comma := ,
@@ -31,7 +30,7 @@ OTLP_ENDPOINT ?= host.docker.internal:4317
 HELM_RELEASE ?= conformance
 HELM_NAMESPACE ?= infrapilot-test
 
-.PHONY: help bootstrap gen fmt fmt-check lint lint-go lint-proto lint-helm lint-obs lint-docker vuln db-provision deploy-only \
+.PHONY: help bootstrap gen fmt fmt-check lint lint-go lint-proto lint-helm lint-obs lint-docker vuln db-provision deploy-only undeploy \
         test test-integration verify secrets up down ps logs cluster cluster-down image deploy e2e clean
 
 help: ## List targets
@@ -77,8 +76,9 @@ lint-obs:
 lint-docker:
 	@if command -v hadolint >/dev/null; then find $(ROOT) -name Dockerfile -not -path '*/node_modules/*' -print0 | xargs -0 -r hadolint; else echo "hadolint not installed, skipping"; fi
 
-vuln: ## govulncheck over all Go modules, including the pinned tools
-	@for m in $(ALL_GO_MODULES); do echo "govulncheck: $$m"; (cd $(ROOT)/$$m && $(GOTOOL) govulncheck ./...) || exit 1; done
+vuln: ## govulncheck over all Go modules and the pinned tools (`tool` pattern)
+	@for m in $(GO_MODULES); do echo "govulncheck: $$m"; (cd $(ROOT)/$$m && $(GOTOOL) govulncheck ./...) || exit 1; done
+	@echo "govulncheck: tools"; cd $(ROOT)/tools && $(GOTOOL) govulncheck tool
 
 test: ## Unit tests with the race detector
 	@for m in $(GO_MODULES); do echo "go test: $$m"; (cd $(ROOT)/$$m && $(GO) test -race -count=1 -timeout 10m ./...) || exit 1; done
@@ -135,6 +135,10 @@ deploy-only: ## Install an already built CONFORMANCE_IMAGE (CI deploys the image
 	    --set image.repository=$(firstword $(subst :, ,$(CONFORMANCE_IMAGE))) --set image.tag=$(lastword $(subst :, ,$(CONFORMANCE_IMAGE))) \
 	    --set otlp.endpoint=$(OTLP_ENDPOINT)
 	@helm --kube-context $(KUBE_CONTEXT) test $(HELM_RELEASE) --namespace $(HELM_NAMESPACE) --logs
+
+undeploy: ## Remove the conformance release and its namespace (including the kept test database)
+	@helm --kube-context $(KUBE_CONTEXT) uninstall $(HELM_RELEASE) --namespace $(HELM_NAMESPACE) --ignore-not-found
+	@kubectl --context $(KUBE_CONTEXT) delete namespace $(HELM_NAMESPACE) --ignore-not-found --wait
 
 e2e: ## Verify the deployed conformance service reports traces/metrics to the obs profile (needs make up PROFILE=obs)
 	@cd $(ROOT)/tests && KUBE_CONTEXT=$(KUBE_CONTEXT) HELM_NAMESPACE=$(HELM_NAMESPACE) HELM_RELEASE=$(HELM_RELEASE) \

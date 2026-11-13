@@ -55,7 +55,9 @@ type fake struct {
 	once    sync.Once
 	failAt  time.Duration
 	panics  bool
+	// stuck components ignore cancellation until release is closed.
 	stuck   bool
+	release chan struct{}
 }
 
 func newFake(name string, rec *recorder) *fake {
@@ -75,7 +77,7 @@ func (f *fake) Run(ctx context.Context) error {
 	}
 	if f.stuck {
 		<-ctx.Done()
-		time.Sleep(5 * time.Second) // ignores the drain deadline
+		<-f.release // ignores the drain deadline until the test releases it
 		return nil
 	}
 	select {
@@ -169,6 +171,7 @@ func TestApp_PanicInRunBecomesError(t *testing.T) {
 	a.Add(p)
 	err := a.Run(t.Context())
 	require.ErrorContains(t, err, "panic: component exploded")
+	require.ErrorContains(t, err, "goroutine", "the stack is kept")
 }
 
 func TestApp_ShutdownDelayAppliedOnSignal(t *testing.T) {
@@ -192,6 +195,8 @@ func TestApp_StopOrderAndDeadline(t *testing.T) {
 	a := newApp(t, rec, app.Config{ShutdownTimeout: 200 * time.Millisecond})
 	s := newFake("stuck", rec)
 	s.stuck = true
+	s.release = make(chan struct{})
+	defer close(s.release) // let the goroutine finish so goleak stays clean
 	a.Add(newFake("db", rec), s)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
@@ -202,7 +207,6 @@ func TestApp_StopOrderAndDeadline(t *testing.T) {
 	err := <-done
 	require.ErrorIs(t, err, app.ErrShutdownTimeout)
 	require.Less(t, time.Since(start), 2*time.Second, "Run returns at the deadline even though a component is stuck")
-	time.Sleep(5 * time.Second) // let the stuck goroutine finish so goleak stays clean
 }
 
 func TestApp_ExitingComponentIsAnError(t *testing.T) {
@@ -310,4 +314,62 @@ func statusOf(ctx context.Context, url string) int {
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 	return resp.StatusCode
+}
+
+// TestApp_ContextOnlyComponentStopsBeforeEarlierResources: a background loop (no stop func) added after the
+// pool must have returned from Run before the pool is closed (go-review M4).
+func TestApp_ContextOnlyComponentStopsBeforeEarlierResources(t *testing.T) {
+	t.Parallel()
+	rec := &recorder{}
+	a := newApp(t, rec, app.Config{ShutdownTimeout: time.Second})
+	a.Add(
+		app.Closer("pool", func(context.Context) error { rec.add("close:pool"); return nil }),
+		app.Func("prober", func(ctx context.Context) error { <-ctx.Done(); rec.add("exit:prober"); return nil }, nil),
+	)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	require.Eventually(t, func() bool { return len(rec.list()) > 0 }, time.Second, 5*time.Millisecond)
+	cancel()
+	require.NoError(t, <-done)
+	events := rec.list()
+	require.Equal(t, []string{"ready=true", "ready=false", "exit:prober", "close:pool"}, events)
+}
+
+// TestApp_ClosersGetTheirOwnBudget: a drain that consumes its whole deadline does not leave the telemetry
+// flush with an expired context (go-review M5).
+func TestApp_ClosersGetTheirOwnBudget(t *testing.T) {
+	t.Parallel()
+	rec := &recorder{}
+	a := newApp(t, rec, app.Config{ShutdownTimeout: 100 * time.Millisecond, CloseTimeout: time.Second})
+	var closeCtxErr error
+	a.Add(
+		app.Closer("telemetry", func(ctx context.Context) error { closeCtxErr = ctx.Err(); return nil }),
+		app.Func("slow-drain", func(ctx context.Context) error { <-ctx.Done(); return nil },
+			func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }),
+	)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	err := <-done
+	require.ErrorIs(t, err, context.DeadlineExceeded, "the slow drain is reported")
+	require.NoError(t, closeCtxErr, "the closer still had a live budget")
+}
+
+func TestApp_ShutdownPanicIsReported(t *testing.T) {
+	t.Parallel()
+	rec := &recorder{}
+	a := newApp(t, rec, app.Config{ShutdownTimeout: time.Second})
+	a.Add(app.Closer("db", func(context.Context) error { rec.add("close:db"); return nil }),
+		app.Func("bad", func(ctx context.Context) error { <-ctx.Done(); return nil }, func(context.Context) error { panic("oops") }))
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	err := <-done
+	require.ErrorContains(t, err, "panic during shutdown: oops")
+	require.Contains(t, rec.list(), "close:db", "the sequence continues after a panicking Shutdown")
 }

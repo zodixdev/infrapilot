@@ -96,6 +96,11 @@ func (s *Server) Run(ctx context.Context) error {
 // remaining connections so Run returns in bounded time.
 func (s *Server) Shutdown(ctx context.Context) error {
 	err := s.srv.Shutdown(ctx)
+	// Serve closes the listener it was given; if Run never started (an earlier component failed) the
+	// listener is still ours to close.
+	if lnErr := s.ln.Close(); lnErr != nil && !errors.Is(lnErr, net.ErrClosed) {
+		err = errors.Join(err, lnErr)
+	}
 	if err == nil {
 		return nil
 	}

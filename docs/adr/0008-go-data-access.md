@@ -5,7 +5,7 @@
 ## Decision
 `pgx/v5` with `pgxpool`; queries written in SQL and generated with `sqlc` (type-safe, reviewable SQL,
 easy `EXPLAIN ANALYZE`); migrations with `goose` (SQL files, embedded). Transactions via a small
-`WithTx(ctx, fn)` helper that also does `SET LOCAL app.org_id`.
+`WithTx(ctx, fn)` helper that also does `SET LOCAL app.org_id` (implemented as `set_config(..., true)`; see ADR-0018).
 
 ## Alternatives rejected
 GORM/ent (hidden queries, harder to optimize and reason about locks). Raw `database/sql` everywhere

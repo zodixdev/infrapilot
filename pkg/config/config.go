@@ -5,6 +5,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"reflect"
 	"strings"
 	"time"
@@ -108,6 +110,8 @@ type HTTP struct {
 	WriteTimeout      time.Duration `env:"WRITE_TIMEOUT" envDefault:"30s"`
 	IdleTimeout       time.Duration `env:"IDLE_TIMEOUT" envDefault:"120s"`
 	MaxHeaderBytes    int           `env:"MAX_HEADER_BYTES" envDefault:"1048576"`
+	// MaxBodyBytes caps request bodies (413 beyond it); routes that need more raise it explicitly.
+	MaxBodyBytes int64 `env:"MAX_BODY_BYTES" envDefault:"1048576"`
 }
 
 // GRPC configures the internal gRPC listener.
@@ -120,6 +124,15 @@ type GRPC struct {
 	MaxConnectionAge     time.Duration `env:"MAX_CONNECTION_AGE" envDefault:"30m"`
 	EnableReflection     bool          `env:"REFLECTION" envDefault:"false"`
 	MaxConcurrentStreams uint32        `env:"MAX_CONCURRENT_STREAMS" envDefault:"1024"`
+	// MaxConnectionAgeGrace lets in-flight RPCs finish after MaxConnectionAge. Long-lived streaming servers
+	// (agent-manager) set MaxConnectionAge=0 instead.
+	MaxConnectionAgeGrace time.Duration `env:"MAX_CONNECTION_AGE_GRACE" envDefault:"30s"`
+	// TLS material (cert-manager mounts). Required in staging and prod; ClientCAFile enables mTLS.
+	TLSCertFile     string `env:"TLS_CERT_FILE" envDefault:""`
+	TLSKeyFile      string `env:"TLS_KEY_FILE" envDefault:""`
+	TLSClientCAFile string `env:"TLS_CLIENT_CA_FILE" envDefault:""`
+	// Disabled turns the gRPC listener off for services that have no internal API.
+	Disabled bool `env:"DISABLED" envDefault:"false"`
 }
 
 // Shutdown controls graceful termination (AGENTS.md §5).
@@ -135,13 +148,16 @@ type Shutdown struct {
 // environment specification keep their standard spelling and semantics; InfraPilot-specific settings use
 // the TELEMETRY_ prefix so the SDK never parses them with different units.
 type Telemetry struct {
-	// ExporterOTLPEndpoint is host:port of the collector's OTLP/gRPC receiver; empty disables push export.
+	// ExporterOTLPEndpoint of the collector's OTLP/gRPC receiver: host:port or http(s)://host:port (the
+	// OpenTelemetry spec form). Empty disables push export.
 	ExporterOTLPEndpoint string `env:"OTEL_EXPORTER_OTLP_ENDPOINT" envDefault:""`
 	ExporterOTLPInsecure bool   `env:"OTEL_EXPORTER_OTLP_INSECURE" envDefault:"false"`
 	// TracesSamplerArg is the parent-based trace id ratio (0..1).
 	TracesSamplerArg float64 `env:"OTEL_TRACES_SAMPLER_ARG" envDefault:"1.0"`
 	// MetricsPush additionally pushes metrics over OTLP (pull on /metrics is always on).
-	MetricsPush    bool          `env:"TELEMETRY_METRICS_PUSH" envDefault:"false"`
+	MetricsPush bool `env:"TELEMETRY_METRICS_PUSH" envDefault:"false"`
+	// LogsPush exports logs over OTLP via the slog bridge in addition to stdout.
+	LogsPush       bool          `env:"TELEMETRY_LOGS_PUSH" envDefault:"false"`
 	ExportInterval time.Duration `env:"TELEMETRY_METRIC_EXPORT_INTERVAL" envDefault:"15s"`
 	ExportTimeout  time.Duration `env:"TELEMETRY_EXPORT_TIMEOUT" envDefault:"10s"`
 }
@@ -170,6 +186,29 @@ func (c *Common) Validate() error {
 	if c.HTTP.ReadHeaderTimeout <= 0 || c.HTTP.ReadTimeout <= 0 || c.HTTP.WriteTimeout <= 0 || c.HTTP.IdleTimeout <= 0 {
 		errs = append(errs, errors.New("HTTP_* timeouts must be positive"))
 	}
+	if c.HTTP.MaxHeaderBytes <= 0 || c.HTTP.MaxBodyBytes <= 0 {
+		errs = append(errs, errors.New("HTTP_MAX_HEADER_BYTES and HTTP_MAX_BODY_BYTES must be positive"))
+	}
+	if c.Admin.WriteTimeout <= 0 {
+		errs = append(errs, errors.New("ADMIN_WRITE_TIMEOUT must be positive"))
+	}
+	if c.Admin.Addr == c.HTTP.Addr || (!c.GRPC.Disabled && (c.Admin.Addr == c.GRPC.Addr || c.HTTP.Addr == c.GRPC.Addr)) {
+		errs = append(errs, errors.New("HTTP_ADDR, ADMIN_ADDR and GRPC_ADDR must differ"))
+	}
+	if !c.GRPC.Disabled {
+		if c.GRPC.MaxRecvMsgBytes <= 0 || c.GRPC.MaxConcurrentStreams == 0 {
+			errs = append(errs, errors.New("GRPC_MAX_RECV_MSG_BYTES and GRPC_MAX_CONCURRENT_STREAMS must be positive (0 streams means unlimited)"))
+		}
+		if c.GRPC.ConnectionTimeout <= 0 || c.GRPC.KeepaliveTime <= 0 || c.GRPC.KeepaliveTimeout <= 0 || c.GRPC.MaxConnectionAge < 0 || c.GRPC.MaxConnectionAgeGrace < 0 {
+			errs = append(errs, errors.New("GRPC_* timeouts must be positive"))
+		}
+		if (c.GRPC.TLSCertFile == "") != (c.GRPC.TLSKeyFile == "") {
+			errs = append(errs, errors.New("GRPC_TLS_CERT_FILE and GRPC_TLS_KEY_FILE must be set together"))
+		}
+		if c.GRPC.TLSClientCAFile != "" && c.GRPC.TLSCertFile == "" {
+			errs = append(errs, errors.New("GRPC_TLS_CLIENT_CA_FILE requires GRPC_TLS_CERT_FILE"))
+		}
+	}
 	if c.Shutdown.Timeout <= 0 {
 		errs = append(errs, errors.New("SHUTDOWN_TIMEOUT must be positive"))
 	}
@@ -179,16 +218,62 @@ func (c *Common) Validate() error {
 	if c.Telemetry.TracesSamplerArg < 0 || c.Telemetry.TracesSamplerArg > 1 {
 		errs = append(errs, errors.New("OTEL_TRACES_SAMPLER_ARG must be within [0, 1]"))
 	}
-	if c.Telemetry.MetricsPush && c.Telemetry.ExporterOTLPEndpoint == "" {
-		errs = append(errs, errors.New("TELEMETRY_METRICS_PUSH requires OTEL_EXPORTER_OTLP_ENDPOINT"))
+	if (c.Telemetry.MetricsPush || c.Telemetry.LogsPush) && c.Telemetry.ExporterOTLPEndpoint == "" {
+		errs = append(errs, errors.New("TELEMETRY_METRICS_PUSH / TELEMETRY_LOGS_PUSH require OTEL_EXPORTER_OTLP_ENDPOINT"))
 	}
-	if c.Environment == EnvProd && c.Telemetry.ExporterOTLPEndpoint != "" && c.Telemetry.ExporterOTLPInsecure {
-		errs = append(errs, errors.New("OTEL_EXPORTER_OTLP_INSECURE is not allowed in prod"))
+	if c.Telemetry.ExportInterval <= 0 || c.Telemetry.ExportTimeout <= 0 {
+		errs = append(errs, errors.New("TELEMETRY_METRIC_EXPORT_INTERVAL and TELEMETRY_EXPORT_TIMEOUT must be positive"))
 	}
-	if c.Environment == EnvProd && c.GRPC.EnableReflection {
-		errs = append(errs, errors.New("GRPC_REFLECTION is not allowed in prod"))
+	if e := c.Telemetry.ExporterOTLPEndpoint; e != "" {
+		if err := validateEndpoint(e); err != nil {
+			errs = append(errs, fmt.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT: %w", err))
+		}
 	}
+	errs = append(errs, c.productionRails()...)
 	return errors.Join(errs...)
+}
+
+// productionRails rejects settings that are fine on a laptop but unsafe where real data lives.
+func (c *Common) productionRails() []error {
+	if c.Environment != EnvProd && c.Environment != EnvStaging {
+		return nil
+	}
+	var errs []error
+	envName := string(c.Environment)
+	if c.Telemetry.ExporterOTLPEndpoint != "" && c.Telemetry.ExporterOTLPInsecure {
+		errs = append(errs, fmt.Errorf("OTEL_EXPORTER_OTLP_INSECURE is not allowed in %s", envName))
+	}
+	if c.GRPC.EnableReflection {
+		errs = append(errs, fmt.Errorf("GRPC_REFLECTION is not allowed in %s", envName))
+	}
+	if !c.GRPC.Disabled && c.GRPC.TLSCertFile == "" {
+		errs = append(errs, fmt.Errorf("GRPC_TLS_CERT_FILE is required in %s (security.md: internal traffic is TLS)", envName))
+	}
+	if c.Admin.Pprof && !c.Admin.PprofProdAck {
+		errs = append(errs, fmt.Errorf("ADMIN_PPROF in %s also requires ADMIN_PPROF_PROD_ACK=true (heap profiles may contain secrets)", envName))
+	}
+	if c.Log.Format != "json" {
+		errs = append(errs, fmt.Errorf("LOG_FORMAT must be json in %s", envName))
+	}
+	if c.Environment == EnvProd && strings.EqualFold(c.Log.Level, "debug") {
+		errs = append(errs, errors.New("LOG_LEVEL=debug is not allowed in prod (debug logs tend to carry request bodies)"))
+	}
+	return errs
+}
+
+// validateEndpoint accepts host:port or an http(s) URL with a host.
+func validateEndpoint(e string) error {
+	if strings.Contains(e, "://") {
+		u, err := url.Parse(e)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("%q must be host:port or http(s)://host:port", e)
+		}
+		return nil
+	}
+	if _, _, err := net.SplitHostPort(e); err != nil {
+		return fmt.Errorf("%q must be host:port or http(s)://host:port: %w", e, err)
+	}
+	return nil
 }
 
 // withEnvKeys rewrites parse errors so they name the environment variable (what an operator sets)
@@ -248,4 +333,8 @@ func collectKeys(t reflect.Type, prefix string, out map[string][]string) {
 type Admin struct {
 	Addr  string `env:"ADDR" envDefault:":8081"`
 	Pprof bool   `env:"PPROF" envDefault:"false"`
+	// PprofProdAck must also be set to enable pprof in staging/prod: heap profiles can contain secrets.
+	PprofProdAck bool `env:"PPROF_PROD_ACK" envDefault:"false"`
+	// WriteTimeout must exceed the longest profile (/debug/pprof/profile?seconds=60).
+	WriteTimeout time.Duration `env:"WRITE_TIMEOUT" envDefault:"90s"`
 }
