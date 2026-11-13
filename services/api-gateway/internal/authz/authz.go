@@ -87,6 +87,10 @@ func (a *Authorizer) Check(ctx context.Context, p *principal.Principal, org stri
 	})
 	select {
 	case res := <-ch:
+		if res.Err != nil && errors.Is(res.Err, context.DeadlineExceeded) && ctx.Err() == nil {
+			// The shared call ran under another waiter's (shorter) deadline; this request still has time left.
+			return a.decide(ctx, key, org, perm, project)
+		}
 		if res.Err != nil {
 			return Decision{}, res.Err
 		}

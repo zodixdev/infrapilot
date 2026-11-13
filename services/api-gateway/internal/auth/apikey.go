@@ -105,6 +105,14 @@ func (r *KeyResolver) Resolve(ctx context.Context, raw string) (*principal.Princ
 	})
 	select {
 	case res := <-ch:
+		if res.Err != nil && errors.Is(res.Err, context.DeadlineExceeded) && ctx.Err() == nil {
+			// The shared call ran under another waiter's (shorter) deadline; this request still has time left.
+			c, err := r.lookup(ctx, cacheKey, sum[:])
+			if err != nil {
+				return nil, err
+			}
+			return r.toPrincipal(c)
+		}
 		if res.Err != nil {
 			return nil, res.Err
 		}

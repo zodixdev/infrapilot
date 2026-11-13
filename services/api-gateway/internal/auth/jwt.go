@@ -17,6 +17,14 @@ var ErrInvalidToken = errors.New("auth: invalid token")
 
 var allowedAlgs = []jose.SignatureAlgorithm{jose.RS256, jose.ES256}
 
+// clip bounds claim values quoted in error reasons (logged at debug level).
+func clip(s string) string {
+	if len(s) > 64 {
+		return s[:64] + "…"
+	}
+	return s
+}
+
 func allowedAlg(a jose.SignatureAlgorithm) bool { return slices.Contains(allowedAlgs, a) }
 
 // Identity is the user an access token was issued to.
@@ -97,7 +105,7 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 		return Identity{}, fmt.Errorf("%w: missing exp/iat/sub or lifetime too long", ErrInvalidToken)
 	}
 	if !slices.Contains(v.cfg.AuthorizedParties, extra.AuthorizedParty) {
-		return Identity{}, fmt.Errorf("%w: client %q not accepted", ErrInvalidToken, extra.AuthorizedParty)
+		return Identity{}, fmt.Errorf("%w: client %q not accepted", ErrInvalidToken, clip(extra.AuthorizedParty))
 	}
 	if err := std.ValidateWithLeeway(jwt.Expected{Issuer: v.cfg.Issuer, AnyAudience: jwt.Audience{v.cfg.Audience}, Time: v.now()}, v.cfg.Leeway); err != nil {
 		// Includes issued-in-the-future: check clock skew between the identity provider and the gateway.
@@ -105,7 +113,7 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 	}
 	// Keycloak marks access tokens "Bearer"; ID and refresh tokens carry other types and must not authenticate.
 	if extra.Type != "Bearer" {
-		return Identity{}, fmt.Errorf("%w: token type %q", ErrInvalidToken, extra.Type)
+		return Identity{}, fmt.Errorf("%w: token type %q", ErrInvalidToken, clip(extra.Type))
 	}
 	name := extra.Name
 	if name == "" {
