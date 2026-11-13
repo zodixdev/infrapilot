@@ -12,11 +12,7 @@ import (
 // name, falling back to the role), so app and batch pools in one process stay distinguishable.
 func (p *Pool) registerMetrics(mp metric.MeterProvider) error {
 	m := mp.Meter("github.com/zodixdev/infrapilot/pkg/postgres")
-	name := p.cfg.ApplicationName
-	if name == "" {
-		name = p.pool.Config().ConnConfig.User
-	}
-	attrs := metric.WithAttributes(attribute.String("pool", name))
+	attrs := metric.WithAttributes(attribute.String("pool", p.cfg.ApplicationName))
 	var (
 		total, idle, acquired, constructing, maxConns metric.Int64ObservableGauge
 		acquireCount, emptyAcquire, canceled          metric.Int64ObservableCounter

@@ -21,10 +21,10 @@ envFrom:
 otlp:
   endpoint: host.docker.internal:4317
   insecure: true
-  # Where the collector lives, as seen from the pods. Cluster-internal ranges are excluded so the rule cannot
-  # be used to reach other workloads on 4317.
+  # Where the collector lives, as seen from the pods. `make deploy` passes the collector's exact /32 (resolved
+  # inside the kind node); this fallback excludes every private range so the rule cannot reach other workloads.
   egressCIDR: 0.0.0.0/0
-  egressExcept: [10.0.0.0/8]
+  egressExcept: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]
 shutdown:
   delaySeconds: 2
   timeoutSeconds: 20

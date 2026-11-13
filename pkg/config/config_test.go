@@ -115,6 +115,7 @@ func TestCommon_Validate(t *testing.T) {
 		{"staging pprof without ack", map[string]string{"ENVIRONMENT": "staging", "ADMIN_PPROF": "true"}, "ADMIN_PPROF_PROD_ACK"},
 		{"staging text logs", map[string]string{"ENVIRONMENT": "staging", "LOG_FORMAT": "text"}, "LOG_FORMAT must be json in staging"},
 		{"prod debug logs", map[string]string{"ENVIRONMENT": "prod", "LOG_LEVEL": "debug"}, "LOG_LEVEL=debug"},
+		{"prod plaintext otlp url", map[string]string{"ENVIRONMENT": "prod", "OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector:4317"}, "must not use http://"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

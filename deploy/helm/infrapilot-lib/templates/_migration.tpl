@@ -1,6 +1,10 @@
 {{- define "infrapilot-lib.migration" -}}
 {{- $v := include "infrapilot-lib.values" . | fromYaml -}}
 {{- if $v.migration.enabled }}
+{{- if $v.networkPolicy.enabled }}
+{{- if not $v.migration.egress }}
+{{- fail "migration.egress must list the database (DNS-only egress would make the migration job time out)" }}
+{{- end }}
 ---
 # The release's NetworkPolicy does not exist yet when a pre-install hook runs, so the job (which holds the
 # DDL-capable migrator credential) gets its own policy, created first: DNS plus migration.egress only.
@@ -28,6 +32,7 @@ spec:
     {{- with $v.migration.egress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
+{{- end }}
 ---
 # Runs schema migrations (expand → migrate → contract, ADR-0018 migrator role) before the new
 # revision rolls out. A failed job blocks the release.

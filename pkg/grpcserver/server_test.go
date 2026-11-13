@@ -100,6 +100,37 @@ func sleep(ctx context.Context, conn *grpc.ClientConn, d time.Duration) error {
 	return conn.Invoke(ctx, "/"+testService+"/Sleep", durationpb.New(d), &emptypb.Empty{})
 }
 
+// inFlightMeter returns a meter provider whose grpc_server_in_flight gauge tests poll instead of sleeping.
+func inFlightMeter(t *testing.T) (*sdkmetric.ManualReader, *sdkmetric.MeterProvider) {
+	t.Helper()
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.WithoutCancel(t.Context())) })
+	return reader, mp
+}
+
+// waitInFlight polls until exactly want RPCs are inside handlers.
+func waitInFlight(t *testing.T, reader *sdkmetric.ManualReader, want int64) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		var rm metricdata.ResourceMetrics
+		if err := reader.Collect(t.Context(), &rm); err != nil {
+			return false
+		}
+		var n int64
+		for _, sm := range rm.ScopeMetrics {
+			for _, m := range sm.Metrics {
+				if sum, ok := m.Data.(metricdata.Sum[int64]); ok && m.Name == "grpc_server_in_flight" {
+					for _, dp := range sum.DataPoints {
+						n += dp.Value
+					}
+				}
+			}
+		}
+		return n == want
+	}, 5*time.Second, 2*time.Millisecond, "expected %d in-flight RPC(s)", want)
+}
+
 func TestNew_Validation(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig()
@@ -114,17 +145,18 @@ func TestNew_Validation(t *testing.T) {
 
 func TestServer_GracefulStopDrainsInFlight(t *testing.T) {
 	t.Parallel()
-	s, conn, runErr := start(t)
+	reader, mp := inFlightMeter(t)
+	s, conn, runErr := start(t, grpcserver.WithMeterProvider(mp))
 	callErr := make(chan error, 1)
+	rpcStart := time.Now()
 	go func() { callErr <- sleep(t.Context(), conn, 400*time.Millisecond) }()
-	time.Sleep(100 * time.Millisecond) // let the RPC reach the server
+	waitInFlight(t, reader, 1) // the RPC reached the handler
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	start := time.Now()
 	require.NoError(t, s.Shutdown(ctx))
+	require.GreaterOrEqual(t, time.Since(rpcStart), 400*time.Millisecond, "Shutdown waited for the in-flight RPC")
 	require.NoError(t, <-callErr, "in-flight RPC completed during drain")
-	require.GreaterOrEqual(t, time.Since(start), 250*time.Millisecond)
 	require.NoError(t, <-runErr)
 
 	err := sleep(t.Context(), conn, 0)
@@ -133,10 +165,11 @@ func TestServer_GracefulStopDrainsInFlight(t *testing.T) {
 
 func TestServer_ShutdownDeadlineForcesStop(t *testing.T) {
 	t.Parallel()
-	s, conn, runErr := start(t)
+	reader, mp := inFlightMeter(t)
+	s, conn, runErr := start(t, grpcserver.WithMeterProvider(mp))
 	callErr := make(chan error, 1)
 	go func() { callErr <- sleep(t.Context(), conn, 10*time.Second) }()
-	time.Sleep(100 * time.Millisecond)
+	waitInFlight(t, reader, 1)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()

@@ -100,7 +100,8 @@ func Setup(ctx context.Context, cfg Config, svc Service, logger *slog.Logger) (*
 		svc.InstanceID, _ = os.Hostname()
 	}
 
-	// resource.New (unlike Merge with resource.Default) never fails on schema-URL mismatches after an SDK bump.
+	// A schema-URL conflict (the SDK's detectors on a newer semconv than ours after a dependency bump) is not
+	// fatal: the resource is still usable, so it is logged and startup continues.
 	res, err := resource.New(ctx,
 		resource.WithSchemaURL(semconv.SchemaURL),
 		resource.WithTelemetrySDK(),
@@ -112,7 +113,9 @@ func Setup(ctx context.Context, cfg Config, svc Service, logger *slog.Logger) (*
 			semconv.DeploymentEnvironmentNameKey.String(svc.Environment),
 		),
 	)
-	if err != nil {
+	if errors.Is(err, resource.ErrSchemaURLConflict) && res != nil {
+		logger.WarnContext(ctx, "telemetry resource schema URL conflict; continuing", slog.Any("error", err))
+	} else if err != nil {
 		return nil, fmt.Errorf("telemetry: build resource: %w", err)
 	}
 
@@ -324,15 +327,13 @@ func (h *errorHandler) Handle(err error) {
 		return
 	}
 	suppressed := h.dropped[msg]
-	h.last[msg] = now
 	delete(h.dropped, msg)
-	if len(h.last) > 256 { // bound memory: forget everything older than the interval
-		for k, t := range h.last {
-			if now.Sub(t) >= h.interval {
-				delete(h.last, k)
-			}
-		}
+	// Bound memory even when error texts vary (addresses, counts): past the cap, start over.
+	if len(h.last) >= 256 {
+		clear(h.last)
+		clear(h.dropped)
 	}
+	h.last[msg] = now
 	h.mu.Unlock()
 	h.log.LogAttrs(context.Background(), slog.LevelWarn, "opentelemetry error",
 		slog.Any("error", err), slog.Int("suppressed_repeats", suppressed))

@@ -50,7 +50,7 @@ services:
     profiles: [core]
     <<: *logging
     environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required (run make secrets)}
     command: ["sh", "-c", "exec redis-server --save '' --appendonly no --maxmemory 128mb --maxmemory-policy allkeys-lru --requirepass \"$$REDIS_PASSWORD\""]
     ports: ["${BIND_ADDR:-127.0.0.1}:${REDIS_PORT:-6379}:6379"]
     healthcheck:

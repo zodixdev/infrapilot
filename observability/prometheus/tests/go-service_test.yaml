@@ -90,3 +90,14 @@ tests:
             exp_annotations:
               summary: "Scrape target conformance/10.0.0.1:8081 is down"
               runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#servicetargetdown
+
+  - name: a terminated pod's last not-ready sample does not alert
+    interval: 1m
+    input_series:
+      # Ready, then reports 0 once while shutting down, then stops reporting (pod deleted on rollout).
+      - series: 'health_ready{job="api",instance="api-old"}'
+        values: '1x5 0 _x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ServiceNotReady
+        exp_alerts: []

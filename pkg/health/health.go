@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"sort"
 	"sync"
-	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -80,9 +80,10 @@ type entry struct {
 	name     string
 	check    Check
 	interval time.Duration
-	// inflight is set while a check goroutine runs. A check that ignores its context therefore occupies at
-	// most one goroutine: later evaluations report "still running" instead of starting another.
-	inflight atomic.Bool
+	// flight is the evaluation currently running, shared by every concurrent caller (singleflight). A check
+	// that ignores its context therefore occupies at most one goroutine.
+	fmu    sync.Mutex
+	flight *flight
 
 	mu   sync.Mutex
 	last Result
@@ -205,22 +206,74 @@ func (r *Registry) resultFor(ctx context.Context, e *entry) Result {
 	return r.evaluate(ctx, e)
 }
 
+// flight is one evaluation of a check; concurrent callers wait for the same result.
+type flight struct {
+	started time.Time
+	done    chan struct{}
+	res     Result
+}
+
+// errStillRunning is reported when the shared evaluation has been running longer than the check timeout,
+// i.e. the check ignores its context. No new goroutine is started for it.
+var errStillRunning = errors.New("previous evaluation still running")
+
+// evaluate runs the check at most once at a time: callers that arrive while an evaluation is in flight
+// wait for its result (bounded by the check timeout and their own context) instead of failing or starting
+// another goroutine.
 func (r *Registry) evaluate(ctx context.Context, e *entry) Result {
-	ctx, cancel := context.WithTimeout(ctx, r.timeout)
+	waitCtx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
-	start := time.Now()
-	err := safeCheck(ctx, e)
-	res := Result{Status: StatusUp, Duration: time.Since(start), CheckedAt: start}
+
+	e.fmu.Lock()
+	f := e.flight
+	if f == nil {
+		f = &flight{started: time.Now(), done: make(chan struct{})}
+		e.flight = f
+		// The check gets its own deadline, detached from any single caller: a disconnecting client must not
+		// cancel the evaluation other callers are waiting for.
+		checkCtx, checkCancel := context.WithTimeout(context.WithoutCancel(ctx), r.timeout)
+		go r.run(checkCtx, checkCancel, e, f)
+	} else if time.Since(f.started) > r.timeout {
+		e.fmu.Unlock()
+		return downResult(time.Now(), errStillRunning)
+	}
+	e.fmu.Unlock()
+
+	select {
+	case <-f.done:
+		return f.res
+	case <-waitCtx.Done():
+		return downResult(f.started, waitCtx.Err())
+	}
+}
+
+func (r *Registry) run(ctx context.Context, cancel context.CancelFunc, e *entry, f *flight) {
+	defer cancel()
+	err := safeCheck(ctx, e.check)
+	res := Result{Status: StatusUp, Duration: time.Since(f.started), CheckedAt: f.started}
 	if err != nil {
-		res.Status = StatusDown
-		// Errors reach /readyz and logs: scrub credentials and cap the length.
-		res.Error = log.Scrub(err.Error())
-		if len(res.Error) > 512 {
-			res.Error = res.Error[:512] + "…"
-		}
+		res = downResult(f.started, err)
 	}
 	r.recordCheck(ctx, e.name, res.Status == StatusUp)
-	return res
+	f.res = res
+	e.fmu.Lock()
+	e.flight = nil
+	e.fmu.Unlock()
+	close(f.done)
+}
+
+// downResult scrubs credentials from the error (it reaches /readyz and logs) and caps its length on a rune
+// boundary.
+func downResult(start time.Time, err error) Result {
+	msg := log.Scrub(err.Error())
+	if len(msg) > 512 {
+		cut := 512
+		for cut > 0 && !utf8.RuneStart(msg[cut]) {
+			cut--
+		}
+		msg = msg[:cut] + "…"
+	}
+	return Result{Status: StatusDown, Error: msg, Duration: time.Since(start), CheckedAt: start}
 }
 
 // Run drives periodic checks until ctx is cancelled. It owns no goroutines after it returns.
@@ -278,31 +331,16 @@ func levelFor(s Status) slog.Level {
 	return slog.LevelWarn
 }
 
-// errStillRunning is reported while a previous evaluation of the same check has not returned yet.
-var errStillRunning = errors.New("previous evaluation still running")
-
-func safeCheck(ctx context.Context, e *entry) error {
-	if !e.inflight.CompareAndSwap(false, true) {
-		return errStillRunning
-	}
-	done := make(chan error, 1)
-	go func() {
-		defer e.inflight.Store(false)
-		defer func() {
-			if rec := recover(); rec != nil {
-				done <- errors.New("health check panicked")
-			}
-		}()
-		done <- e.check(ctx)
+// safeCheck runs c on the calling (flight) goroutine and turns a panic into an error. It deliberately does not
+// abandon a check that ignores ctx: the flight stays in progress until the check returns, so such a check
+// holds exactly one goroutine while callers time out on their own deadlines.
+func safeCheck(ctx context.Context, c Check) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = errors.New("health check panicked")
+		}
 	}()
-	select {
-	case err := <-done:
-		return err
-	case <-ctx.Done():
-		// The check goroutine finishes on its own once it honours ctx; we do not wait for it so a
-		// stuck dependency cannot stall readiness reporting.
-		return ctx.Err()
-	}
+	return c(ctx)
 }
 
 // LivenessHandler always returns 200 while the process serves requests.

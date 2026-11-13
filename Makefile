@@ -27,6 +27,8 @@ GIT_REV := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)$(shell gi
 CONFORMANCE_IMAGE ?= infrapilot/conformance:$(GIT_REV)
 # OTLP endpoint the conformance pods push to (host compose stack). Linux CI uses the docker bridge gateway.
 OTLP_ENDPOINT ?= host.docker.internal:4317
+# NetworkPolicy egress for OTLP: the collector host's exact address as seen from the kind node.
+OTLP_EGRESS_CIDR ?= $(shell docker exec $(KIND_CLUSTER)-control-plane getent ahostsv4 $(firstword $(subst :, ,$(OTLP_ENDPOINT))) 2>/dev/null | awk 'NR==1{print $$1"/32"}')
 HELM_RELEASE ?= conformance
 HELM_NAMESPACE ?= infrapilot-test
 
@@ -41,7 +43,8 @@ bootstrap: ## Install pinned toolchain (brew packages + Go tools) and git hooks
 	@command -v kubectl >/dev/null || { echo "kubectl is required"; exit 1; }
 	@if command -v brew >/dev/null; then brew bundle --file=$(ROOT)/Brewfile --no-upgrade; \
 	 else echo "homebrew not found: install the packages listed in Brewfile manually"; fi
-	@for t in $(GO_TOOLS); do printf '%-20s' "$$t"; v="$$( { $(GOTOOL) $$t --version || $(GOTOOL) $$t version || $(GOTOOL) $$t -v; } 2>/dev/null | head -1)"; echo "$${v:-built}"; done
+	@for t in $(GO_TOOLS); do printf '%-20s' "$$t"; case $$t in kubeconform) flag=-v;; sqlc|gitleaks|kind) flag=version;; *) flag=--version;; esac; \
+	  v="$$($(GOTOOL) $$t $$flag 2>/dev/null | head -1)"; echo "$${v:-built}"; done
 	@if [[ -d .git ]]; then pre-commit install --install-hooks >/dev/null && echo "pre-commit hooks installed"; fi
 
 gen: ## Generate code from contracts (protobuf via buf, OpenAPI via oapi-codegen)
@@ -133,7 +136,8 @@ deploy-only: ## Install an already built CONFORMANCE_IMAGE (CI deploys the image
 	@helm --kube-context $(KUBE_CONTEXT) upgrade --install $(HELM_RELEASE) $(ROOT)/tests/helm/conformance \
 	    --namespace $(HELM_NAMESPACE) --wait --timeout 180s \
 	    --set image.repository=$(firstword $(subst :, ,$(CONFORMANCE_IMAGE))) --set image.tag=$(lastword $(subst :, ,$(CONFORMANCE_IMAGE))) \
-	    --set otlp.endpoint=$(OTLP_ENDPOINT)
+	    --set otlp.endpoint=$(OTLP_ENDPOINT) \
+	    $(if $(OTLP_EGRESS_CIDR),--set otlp.egressCIDR=$(OTLP_EGRESS_CIDR) --set 'otlp.egressExcept=null',)
 	@helm --kube-context $(KUBE_CONTEXT) test $(HELM_RELEASE) --namespace $(HELM_NAMESPACE) --logs
 
 undeploy: ## Remove the conformance release and its namespace (including the kept test database)

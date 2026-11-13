@@ -36,12 +36,15 @@ type ReadinessGate interface {
 // Config controls shutdown timing.
 type Config struct {
 	// ShutdownDelay keeps serving after readiness turns false so that load balancers and kube-proxy stop
-	// routing new traffic before listeners close. Applied only on signal-initiated shutdown.
+	// routing new traffic before listeners close. Applied when shutdown is requested (signal or cancellation
+	// of the context passed to Run), not when a component fails.
 	ShutdownDelay time.Duration
 	// ShutdownTimeout bounds the drain of all serving components combined.
 	ShutdownTimeout time.Duration
 	// CloseTimeout is a separate budget for resources added with Closer (pools, telemetry flush), so a drain
-	// that used its whole deadline cannot starve them (default 5s; the Helm grace period reserves it).
+	// that used its whole deadline cannot starve them (default 5s; the Helm grace period reserves it). Each
+	// closer gets an equal share of what remains, so a pool that cannot close does not starve the telemetry
+	// flush that runs after it.
 	CloseTimeout time.Duration
 }
 
@@ -170,15 +173,21 @@ func (a *App) Run(ctx context.Context) error {
 	// Closer share a separate close budget that starts when the first of them is reached.
 	drainCtx, cancelDrain := context.WithTimeout(context.WithoutCancel(ctx), a.cfg.ShutdownTimeout)
 	defer cancelDrain()
-	closeBudget := sync.OnceValues(func() (context.Context, context.CancelFunc) {
-		return context.WithTimeout(context.WithoutCancel(ctx), a.cfg.CloseTimeout)
-	})
-	defer func() { _, cancel := closeBudget(); cancel() }()
+	closeDeadline := sync.OnceValue(func() time.Time { return time.Now().Add(a.cfg.CloseTimeout) })
+	remainingClosers := 0
+	for _, r := range rs {
+		if isResource(r.c) {
+			remainingClosers++
+		}
+	}
 	for i := len(rs) - 1; i >= 0; i-- {
 		r := rs[i]
-		stepCtx := drainCtx //nolint:contextcheck // both budgets derive from ctx via WithoutCancel (shutdown must outlive cancellation)
+		stepCtx := drainCtx
+		cancelStep := context.CancelFunc(func() {})
 		if isResource(r.c) {
-			stepCtx, _ = closeBudget()
+			share := time.Until(closeDeadline()) / time.Duration(remainingClosers)
+			remainingClosers--
+			stepCtx, cancelStep = context.WithTimeout(context.WithoutCancel(ctx), share)
 		}
 		start := time.Now()
 		if err := safeShutdown(stepCtx, r.c); err != nil {
@@ -186,7 +195,9 @@ func (a *App) Run(ctx context.Context) error {
 			a.log.WarnContext(ctx, "component shutdown error", slog.String("component", r.c.Name()), slog.Any("error", err))
 		}
 		r.cancel()
-		if !waitDone(stepCtx, r.done) {
+		finished := waitDone(stepCtx, r.done)
+		cancelStep()
+		if !finished {
 			errs = append(errs, fmt.Errorf("component %s: %w", r.c.Name(), ErrShutdownTimeout))
 			a.log.ErrorContext(ctx, "component did not stop in time", slog.String("component", r.c.Name()))
 			continue
