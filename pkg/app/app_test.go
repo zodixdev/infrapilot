@@ -330,7 +330,7 @@ func statusOf(ctx context.Context, url string) int {
 }
 
 // TestApp_ContextOnlyComponentStopsBeforeEarlierResources: a background loop (no stop func) added after the
-// pool must have returned from Run before the pool is closed (go-review M4).
+// pool must have returned from Run before the pool is closed.
 func TestApp_ContextOnlyComponentStopsBeforeEarlierResources(t *testing.T) {
 	t.Parallel()
 	rec := &recorder{}
@@ -350,7 +350,7 @@ func TestApp_ContextOnlyComponentStopsBeforeEarlierResources(t *testing.T) {
 }
 
 // TestApp_ClosersGetTheirOwnBudget: a drain that consumes its whole deadline does not leave the telemetry
-// flush with an expired context (go-review M5).
+// flush with an expired context.
 func TestApp_ClosersGetTheirOwnBudget(t *testing.T) {
 	t.Parallel()
 	rec := &recorder{}

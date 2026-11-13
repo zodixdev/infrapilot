@@ -141,7 +141,7 @@ func TestResult_JSONDurationInMilliseconds(t *testing.T) {
 }
 
 // TestRegistry_ContextIgnoringCheckDoesNotPileUp: a check that ignores its context occupies at most one
-// goroutine; later evaluations report it as still running (go-review M6).
+// goroutine; later evaluations report it as still running.
 func TestRegistry_ContextIgnoringCheckDoesNotPileUp(t *testing.T) {
 	t.Parallel()
 	release := make(chan struct{})

@@ -78,7 +78,7 @@ tests:
   - name: scrape-down alert only covers InfraPilot targets
     interval: 1m
     input_series:
-      - series: 'up{job="conformance",instance="10.0.0.1:8081",app_kubernetes_io_part_of="infrapilot"}'
+      - series: 'up{job="conformance",instance="192.0.2.10:8081",app_kubernetes_io_part_of="infrapilot"}'
         values: '0x10'
       - series: 'up{job="keycloak",instance="keycloak:9000"}'
         values: '0x10'
@@ -86,9 +86,9 @@ tests:
       - eval_time: 8m
         alertname: ServiceTargetDown
         exp_alerts:
-          - exp_labels: { severity: critical, job: conformance, instance: "10.0.0.1:8081", app_kubernetes_io_part_of: infrapilot }
+          - exp_labels: { severity: critical, job: conformance, instance: "192.0.2.10:8081", app_kubernetes_io_part_of: infrapilot }
             exp_annotations:
-              summary: "Scrape target conformance/10.0.0.1:8081 is down"
+              summary: "Scrape target conformance/192.0.2.10:8081 is down"
               runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#servicetargetdown
 
   - name: a terminated pod's last not-ready sample does not alert
