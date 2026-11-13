@@ -9,7 +9,6 @@ import (
 	"context"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const getResource = `-- name: GetResource :one
@@ -223,7 +222,7 @@ RETURNING id, organization_id, project_id, kind, name, labels, created_at, updat
 `
 
 type UpdateResourceParams struct {
-	Name           pgtype.Text
+	Name           *string
 	Labels         []byte
 	OrganizationID uuid.UUID
 	ProjectID      uuid.UUID

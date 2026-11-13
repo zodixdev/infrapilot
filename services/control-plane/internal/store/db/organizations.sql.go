@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const getOrganization = `-- name: GetOrganization :one
@@ -125,7 +124,7 @@ RETURNING id, organization_id, name, created_at, updated_at, deleted_at
 `
 
 type UpdateOrganizationParams struct {
-	Name pgtype.Text
+	Name *string
 	ID   uuid.UUID
 }
 

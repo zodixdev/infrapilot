@@ -119,7 +119,7 @@ linters:
       - common-false-positives
     rules:
       - path: _test\.go
-        linters: [gosec, noctx, forcetypeassert, containedctx, unparam, sloglint]
+        linters: [gosec, noctx, forcetypeassert, containedctx, unparam, sloglint, contextcheck] # test helpers take ctx from testing.T
       - path: _test\.go
         text: "unused-parameter"
         linters: [revive]

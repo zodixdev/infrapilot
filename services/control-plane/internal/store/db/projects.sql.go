@@ -9,7 +9,6 @@ import (
 	"context"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const getProject = `-- name: GetProject :one
@@ -164,9 +163,9 @@ RETURNING id, organization_id, name, slug, description, created_at, updated_at, 
 `
 
 type UpdateProjectParams struct {
-	Name           pgtype.Text
-	Slug           pgtype.Text
-	Description    pgtype.Text
+	Name           *string
+	Slug           *string
+	Description    *string
 	OrganizationID uuid.UUID
 	ID             uuid.UUID
 }
