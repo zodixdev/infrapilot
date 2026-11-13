@@ -26,9 +26,9 @@ type DB struct {
 }
 
 // Start launches Postgres, applies the migrations as the migrator role and opens both pools.
-func Start(t *testing.T) *DB {
+func Start(t *testing.T, opts ...pgtest.Option) *DB {
 	t.Helper()
-	pg := pgtest.Start(t)
+	pg := pgtest.Start(t, opts...)
 	require.NoError(t, migrations.Migrate(t.Context(), pg.MigratorURL, slog.New(slog.DiscardHandler)))
 	open := func(url, name string) *postgres.Pool {
 		p, err := postgres.Open(t.Context(), postgres.Config{URL: url, ApplicationName: name, MaxConns: 8})
