@@ -475,7 +475,7 @@ type ListMyOrganizationsParams struct {
 
 // CreateOrganizationParams defines parameters for CreateOrganization.
 type CreateOrganizationParams struct {
-	// IdempotencyKey Client-generated unique key (UUID recommended) making a create request safe to retry for 24 h. Printable ASCII only.
+	// IdempotencyKey Client-generated unique key (UUID recommended) making a create request safe to retry for 24 h. Printable ASCII only. A retry while the original is still being processed answers 409 (code `conflict`); retry it after a short delay to receive the original result. Reusing a key with a different request body answers 422.
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
@@ -493,7 +493,7 @@ type ListApiKeysParams struct {
 
 // CreateApiKeyParams defines parameters for CreateApiKey.
 type CreateApiKeyParams struct {
-	// IdempotencyKey Client-generated unique key (UUID recommended) making a create request safe to retry for 24 h. Printable ASCII only.
+	// IdempotencyKey Client-generated unique key (UUID recommended) making a create request safe to retry for 24 h. Printable ASCII only. A retry while the original is still being processed answers 409 (code `conflict`); retry it after a short delay to receive the original result. Reusing a key with a different request body answers 422.
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
@@ -526,7 +526,7 @@ type ListProjectsParams struct {
 
 // CreateProjectParams defines parameters for CreateProject.
 type CreateProjectParams struct {
-	// IdempotencyKey Client-generated unique key (UUID recommended) making a create request safe to retry for 24 h. Printable ASCII only.
+	// IdempotencyKey Client-generated unique key (UUID recommended) making a create request safe to retry for 24 h. Printable ASCII only. A retry while the original is still being processed answers 409 (code `conflict`); retry it after a short delay to receive the original result. Reusing a key with a different request body answers 422.
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
@@ -544,7 +544,7 @@ type ListResourcesParams struct {
 
 // CreateResourceParams defines parameters for CreateResource.
 type CreateResourceParams struct {
-	// IdempotencyKey Client-generated unique key (UUID recommended) making a create request safe to retry for 24 h. Printable ASCII only.
+	// IdempotencyKey Client-generated unique key (UUID recommended) making a create request safe to retry for 24 h. Printable ASCII only. A retry while the original is still being processed answers 409 (code `conflict`); retry it after a short delay to receive the original result. Reusing a key with a different request body answers 422.
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 

@@ -545,7 +545,7 @@ components:
     IdempotencyKey:
       name: Idempotency-Key
       in: header
-      description: Client-generated unique key (UUID recommended) making a create request safe to retry for 24 h. Printable ASCII only.
+      description: Client-generated unique key (UUID recommended) making a create request safe to retry for 24 h. Printable ASCII only. A retry while the original is still being processed answers 409 (code `conflict`); retry it after a short delay to receive the original result. Reusing a key with a different request body answers 422.
       required: false
       schema:
         type: string
