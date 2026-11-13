@@ -54,6 +54,7 @@ gen: ## Generate code from contracts (protobuf via buf, OpenAPI via oapi-codegen
 	@gofmt -w $(ROOT)/gen/go
 	@cd $(ROOT)/gen && $(GO) mod tidy
 	@for c in $(wildcard $(ROOT)/services/*/sqlc.yaml); do (cd $$(dirname $$c) && $(GOTOOL) sqlc generate) || exit 1; done
+	@for c in $(wildcard $(ROOT)/services/*/oapi-codegen.yaml); do (cd $$(dirname $$c) && $(GOTOOL) oapi-codegen -config oapi-codegen.yaml $(ROOT)/contracts/openapi/public.yaml) || exit 1; done
 
 fmt: ## Format Go and protobuf sources
 	@gofmt -l -w $(addprefix $(ROOT)/,$(GO_MODULES))
