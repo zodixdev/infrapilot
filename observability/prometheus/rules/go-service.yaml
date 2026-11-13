@@ -38,8 +38,14 @@ groups:
           summary: "{{ $labels.job }} stopped pushing telemetry"
           runbook_url: https://github.com/zodixdev/infrapilot/blob/main/docs/runbooks/platform.md#servicetelemetryabsent
 
+      # Only instances that are still reporting: a terminated pod's last pushed sample is health_ready=0
+      # (the gate closes on shutdown) and pushed series carry no staleness marker, so without the freshness
+      # condition every rollout would raise this alert for up to 5 minutes.
       - alert: ServiceNotReady
-        expr: max by (job, instance) (health_ready) == 0
+        expr: |
+          (max by (job, instance) (health_ready) == 0)
+            and on (job, instance)
+          (time() - max by (job, instance) (timestamp(health_ready)) < 60)
         for: 5m
         labels: { severity: critical }
         annotations:

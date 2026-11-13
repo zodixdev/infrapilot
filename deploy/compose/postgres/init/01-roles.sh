@@ -13,6 +13,8 @@ PSQL=(psql -v ON_ERROR_STOP=1 -X -q --username "$POSTGRES_USER")
 
 "${PSQL[@]}" --dbname postgres -v pw="${KEYCLOAK_DB_PASSWORD:?KEYCLOAK_DB_PASSWORD is required}" <<'SQL'
 SET log_min_error_statement = panic;
+-- Keep ALTER ROLE ... PASSWORD out of pg_stat_statements (readable by pg_read_all_stats and on disk).
+SET pg_stat_statements.track_utility = off;
 SELECT 'CREATE ROLE keycloak LOGIN' WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'keycloak') \gexec
 ALTER ROLE keycloak PASSWORD :'pw';
 SELECT 'CREATE DATABASE keycloak OWNER keycloak' WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'keycloak') \gexec
@@ -33,6 +35,7 @@ for svc in "${services[@]}"; do
   echo "init: provisioning database ${svc} (roles ${svc}_migrator, ${svc}_app, ${svc}_batch)"
   "${PSQL[@]}" --dbname postgres -v svc="$svc" -v pw="$pw" <<'SQL'
 SET log_min_error_statement = panic;
+SET pg_stat_statements.track_utility = off;
 \set migrator :svc '_migrator'
 \set app :svc '_app'
 \set batch :svc '_batch'
@@ -59,6 +62,12 @@ SQL
 REVOKE ALL ON SCHEMA public FROM PUBLIC;
 ALTER SCHEMA public OWNER TO :"migrator";
 GRANT USAGE ON SCHEMA public TO :"app", :"batch";
+-- Volumes provisioned by earlier versions of this script carry default privileges; migrations now grant per
+-- table (ADR-0018), so remove them. Idempotent.
+ALTER DEFAULT PRIVILEGES FOR ROLE :"migrator" IN SCHEMA public REVOKE ALL ON TABLES FROM :"app", :"batch";
+ALTER DEFAULT PRIVILEGES FOR ROLE :"migrator" IN SCHEMA public REVOKE ALL ON SEQUENCES FROM :"app", :"batch";
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+-- Drop statement texts recorded before track_utility was disabled (they may contain role passwords).
+SELECT pg_stat_statements_reset() WHERE EXISTS (SELECT 1 FROM pg_stat_statements WHERE query ILIKE '%PASSWORD%');
 SQL
 done

@@ -101,6 +101,14 @@ func Recover(logger *slog.Logger) Middleware {
 				if rw.wroteHeader {
 					panic(http.ErrAbortHandler)
 				}
+				// Headers the handler set but never sent (Content-Length, Content-Encoding, ETag, …) would corrupt
+				// the problem document; keep only the request id.
+				h := rw.Header()
+				id := h.Get(RequestIDHeader)
+				clear(h)
+				if id != "" {
+					h.Set(RequestIDHeader, id)
+				}
 				WriteProblem(rw, r, http.StatusInternalServerError, "internal", "Internal error")
 			}()
 			next.ServeHTTP(rw, r)

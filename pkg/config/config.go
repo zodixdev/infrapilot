@@ -243,6 +243,10 @@ func (c *Common) productionRails() []error {
 	if c.Telemetry.ExporterOTLPEndpoint != "" && c.Telemetry.ExporterOTLPInsecure {
 		errs = append(errs, fmt.Errorf("OTEL_EXPORTER_OTLP_INSECURE is not allowed in %s", envName))
 	}
+	// The exporters treat an http:// endpoint as plaintext regardless of the insecure flag.
+	if strings.HasPrefix(strings.ToLower(c.Telemetry.ExporterOTLPEndpoint), "http://") {
+		errs = append(errs, fmt.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT must not use http:// in %s (plaintext)", envName))
+	}
 	if c.GRPC.EnableReflection {
 		errs = append(errs, fmt.Errorf("GRPC_REFLECTION is not allowed in %s", envName))
 	}

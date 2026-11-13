@@ -12,9 +12,11 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/exaring/otelpgx"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
@@ -107,6 +109,7 @@ type Pool struct {
 	cfg       Config
 	bypassRLS bool
 	metrics   metric.Registration
+	closeOnce sync.Once
 }
 
 // Option configures Open.
@@ -142,6 +145,9 @@ func Open(ctx context.Context, cfg Config, opts ...Option) (*Pool, error) {
 	o := openOptions{log: slog.New(slog.DiscardHandler)}
 	for _, opt := range opts {
 		opt(&o)
+	}
+	if o.mp != nil && cfg.ApplicationName == "" {
+		return nil, errors.New("postgres: ApplicationName is required with metrics (it labels the pool's series)")
 	}
 	pc, err := pgxpool.ParseConfig(cfg.URL)
 	if err != nil {
@@ -207,31 +213,46 @@ func (p *Pool) BypassesRLS() bool { return p.bypassRLS }
 // Stat exposes pool statistics.
 func (p *Pool) Stat() *pgxpool.Stat { return p.pool.Stat() }
 
-// HealthCheck returns a readiness probe: a round trip on a pooled connection. When the pool is saturated
-// (every connection in use) and no connection frees up within the probe's deadline, the database is busy,
-// not unreachable: the probe reports healthy so that load spikes do not take every replica out of the
-// Service at once. Saturation is visible through the pool metrics and the PgPoolSaturated alert.
+// HealthCheck returns a readiness probe: a round trip on a pooled connection, using at most half of the
+// probe's deadline. When that times out because every pooled connection is in use, the pool cannot tell a busy
+// database from a dead one, so the probe dials a separate short-lived connection with the remaining budget:
+// a busy database answers it (healthy, and PgPoolSaturated reports the saturation), a dead or black-holed one
+// does not (unhealthy).
 func (p *Pool) HealthCheck() func(ctx context.Context) error {
 	return func(ctx context.Context) error {
+		pooledCtx, cancel := ctx, context.CancelFunc(func() {})
+		if dl, ok := ctx.Deadline(); ok {
+			pooledCtx, cancel = context.WithDeadline(ctx, time.Now().Add(time.Until(dl)/2))
+		}
 		var one int
-		err := p.pool.QueryRow(ctx, "SELECT 1").Scan(&one)
+		err := p.pool.QueryRow(pooledCtx, "SELECT 1").Scan(&one)
+		cancel()
 		if err == nil {
 			return nil
 		}
-		if s := p.pool.Stat(); errors.Is(err, context.DeadlineExceeded) && s.AcquiredConns() >= s.MaxConns() {
-			return nil
+		if s := p.pool.Stat(); !errors.Is(err, context.DeadlineExceeded) || s.AcquiredConns() < s.MaxConns() || ctx.Err() != nil {
+			return fmt.Errorf("postgres: %w", err)
 		}
-		return fmt.Errorf("postgres: %w", err)
+		conn, dialErr := pgx.ConnectConfig(ctx, p.pool.Config().ConnConfig.Copy())
+		if dialErr != nil {
+			return fmt.Errorf("postgres: pool saturated and direct probe failed: %w", dialErr)
+		}
+		defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+		if pingErr := conn.Ping(ctx); pingErr != nil {
+			return fmt.Errorf("postgres: pool saturated and direct probe failed: %w", pingErr)
+		}
+		return nil
 	}
 }
 
 // Close releases all connections, waiting for acquired ones to be returned.
 func (p *Pool) Close() {
-	if p.metrics != nil {
-		_ = p.metrics.Unregister() // only fails if already unregistered
-		p.metrics = nil
-	}
-	p.pool.Close()
+	p.closeOnce.Do(func() {
+		if p.metrics != nil {
+			_ = p.metrics.Unregister() // only fails if already unregistered
+		}
+		p.pool.Close()
+	})
 }
 
 // Shutdown closes the pool within ctx; it satisfies app.Closer's signature. If ctx expires first the

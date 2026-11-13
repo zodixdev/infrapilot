@@ -167,7 +167,9 @@ func (d *DB) Unpause(t *testing.T) {
 
 func (d *DB) docker(t *testing.T, verb string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	// Detached from the test context: Unpause typically runs from t.Cleanup, after t.Context() is cancelled,
+	// and a container left paused would hang every later cleanup that talks to it.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 30*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "docker", verb, d.container.GetContainerID()).CombinedOutput()
 	require.NoError(t, err, "docker %s: %s", verb, out)

@@ -93,6 +93,19 @@ func (f *fake) Shutdown(context.Context) error {
 	return nil
 }
 
+// waitReady blocks until the App has started every component and opened the readiness gate.
+func waitReady(t *testing.T, rec *recorder) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		for _, e := range rec.list() {
+			if e == "ready=true" {
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, time.Millisecond, "app did not become ready")
+}
+
 func newApp(t *testing.T, rec *recorder, cfg app.Config) *app.App {
 	t.Helper()
 	a, err := app.New(cfg, app.WithReadinessGate(rec), app.WithSignals())
@@ -182,7 +195,7 @@ func TestApp_ShutdownDelayAppliedOnSignal(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- a.Run(ctx) }()
-	time.Sleep(20 * time.Millisecond)
+	waitReady(t, rec)
 	cancel()
 	start := time.Now()
 	require.NoError(t, <-done)
@@ -201,7 +214,7 @@ func TestApp_StopOrderAndDeadline(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- a.Run(ctx) }()
-	time.Sleep(20 * time.Millisecond)
+	waitReady(t, rec)
 	cancel()
 	start := time.Now()
 	err := <-done
@@ -230,7 +243,7 @@ func TestApp_CloserRunsInReverseOrder(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- a.Run(ctx) }()
-	time.Sleep(20 * time.Millisecond)
+	waitReady(t, rec)
 	cancel()
 	err := <-done
 	require.ErrorContains(t, err, "shutdown pool: already closed")
@@ -246,7 +259,7 @@ func TestApp_SIGTERM(t *testing.T) {
 	a.Add(newFake("http", rec))
 	done := make(chan error, 1)
 	go func() { done <- a.Run(t.Context()) }()
-	time.Sleep(50 * time.Millisecond)
+	waitReady(t, rec) // the gate opens only after signal.NotifyContext is registered; an earlier SIGTERM would kill the test binary
 	p, err := os.FindProcess(os.Getpid())
 	require.NoError(t, err)
 	require.NoError(t, p.Signal(syscall.SIGTERM))
@@ -351,7 +364,7 @@ func TestApp_ClosersGetTheirOwnBudget(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- a.Run(ctx) }()
-	time.Sleep(20 * time.Millisecond)
+	waitReady(t, rec)
 	cancel()
 	err := <-done
 	require.ErrorIs(t, err, context.DeadlineExceeded, "the slow drain is reported")
@@ -367,7 +380,7 @@ func TestApp_ShutdownPanicIsReported(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- a.Run(ctx) }()
-	time.Sleep(20 * time.Millisecond)
+	waitReady(t, rec)
 	cancel()
 	err := <-done
 	require.ErrorContains(t, err, "panic during shutdown: oops")
