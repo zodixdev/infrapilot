@@ -69,7 +69,16 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps"
+          "unit": "reqps",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": []
       },
@@ -98,7 +107,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(http_server_requests_total{job=\"api-gateway\",instance=~\"$instance\",status=~\"5..\"}[$__rate_interval])) / sum(rate(http_server_requests_total{job=\"api-gateway\",instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "(sum(rate(http_server_requests_total{job=\"api-gateway\",instance=~\"$instance\",status=~\"5..\"}[$__rate_interval])) or vector(0)) / sum(rate(http_server_requests_total{job=\"api-gateway\",instance=~\"$instance\"}[$__rate_interval]))",
           "legendFormat": ""
         }
       ],
@@ -194,7 +203,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(gateway_ratelimit_bypassed_total{job=\"api-gateway\",instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(gateway_ratelimit_bypassed_total{job=\"api-gateway\",instance=~\"$instance\"}[$__rate_interval])) or vector(0)",
           "legendFormat": ""
         }
       ],
