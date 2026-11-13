@@ -4,9 +4,8 @@ image:
   tag: dev
   pullPolicy: IfNotPresent
 replicaCount: 2
+environment: test
 env:
-  - name: ENVIRONMENT
-    value: test
   - name: LOG_LEVEL
     value: info
   - name: DATABASE_URL

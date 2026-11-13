@@ -21,8 +21,10 @@ spec:
     - from:
         {{- toYaml . | nindent 8 }}
       ports:
+        {{- if $v.ports.http }}
         - port: http
           protocol: TCP
+        {{- end }}
         {{- if $v.ports.grpc }}
         - port: grpc
           protocol: TCP
@@ -42,8 +44,10 @@ spec:
             matchLabels:
               {{- include "infrapilot-lib.testSelectorLabels" . | nindent 14 }}
       ports:
+        {{- if $v.ports.http }}
         - port: http
           protocol: TCP
+        {{- end }}
         - port: admin
           protocol: TCP
         {{- if $v.ports.grpc }}

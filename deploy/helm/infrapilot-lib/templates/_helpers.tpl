@@ -64,6 +64,8 @@ helm.sh/chart: {{ include "infrapilot-lib.chart" . }}
 {{/* Standard env injected into every container: identity, ports, shutdown timing. */}}
 {{- define "infrapilot-lib.standardEnv" -}}
 {{- $v := include "infrapilot-lib.values" . | fromYaml -}}
+- name: ENVIRONMENT
+  value: {{ required "environment is required (dev, test, staging or prod)" $v.environment | quote }}
 - name: SERVICE_NAME
   value: {{ include "infrapilot-lib.name" . | quote }}
 - name: SERVICE_VERSION
@@ -76,13 +78,23 @@ helm.sh/chart: {{ include "infrapilot-lib.chart" . }}
   valueFrom:
     fieldRef:
       fieldPath: metadata.namespace
+{{- if $v.ports.http }}
 - name: HTTP_ADDR
   value: {{ printf ":%d" (int $v.ports.http) | quote }}
+{{- end }}
 - name: ADMIN_ADDR
   value: {{ printf ":%d" (int $v.ports.admin) | quote }}
 {{- if $v.ports.grpc }}
 - name: GRPC_ADDR
   value: {{ printf ":%d" (int $v.ports.grpc) | quote }}
+{{- end }}
+{{- if and $v.tls.enabled $v.ports.grpc }}
+- name: GRPC_TLS_CERT_FILE
+  value: {{ printf "%s/tls.crt" $v.tls.mountPath | quote }}
+- name: GRPC_TLS_KEY_FILE
+  value: {{ printf "%s/tls.key" $v.tls.mountPath | quote }}
+- name: GRPC_TLS_CLIENT_CA_FILE
+  value: {{ printf "%s/ca.crt" $v.tls.mountPath | quote }}
 {{- end }}
 - name: SHUTDOWN_DELAY
   value: {{ printf "%ds" (int $v.shutdown.delaySeconds) | quote }}
@@ -118,5 +130,7 @@ successThreshold: {{ . }}
 {{ include "infrapilot-lib.networkpolicy" . }}
 {{ include "infrapilot-lib.servicemonitor" . }}
 {{ include "infrapilot-lib.migration" . }}
+{{ include "infrapilot-lib.certificate" . }}
+{{ include "infrapilot-lib.cronjobs" . }}
 {{ include "infrapilot-lib.tests" . }}
 {{- end -}}

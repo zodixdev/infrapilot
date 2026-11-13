@@ -3,6 +3,9 @@ Defaults for every InfraPilot service. A consuming chart overrides any key in it
 Maps are deep-merged, lists are replaced.
 */}}
 {{- define "infrapilot-lib.defaults" -}}
+# Deployment environment (dev, test, staging, prod) → ENVIRONMENT. Required: the production safety rails of
+# pkg/config (TLS, no plaintext peers, no reflection) only apply when the service knows it runs in prod.
+environment: ""
 nameOverride: ""
 fullnameOverride: ""
 image:
@@ -22,7 +25,7 @@ command: []
 args: []
 env: []
 envFrom: []
-# Container ports by name. Set grpc to null for services without a gRPC listener.
+# Container ports by name. Set http or grpc to null for services without that listener.
 ports:
   http: 8080
   admin: 8081
@@ -133,6 +136,40 @@ migration:
   backoffLimit: 3
   activeDeadlineSeconds: 600
   ttlSecondsAfterFinished: 600
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+# Workload certificate from cert-manager (ADR-0025): URI SAN spiffe://<trustDomain>/ns/<namespace>/sa/<sa>,
+# DNS names of the Services, server + client usage. Mounted at mountPath (tls.crt, tls.key, ca.crt).
+tls:
+  enabled: false
+  issuerRef:
+    kind: ClusterIssuer
+    name: infrapilot-internal-ca
+  trustDomain: infrapilot.local
+  duration: 24h
+  renewBefore: 8h
+  mountPath: /etc/infrapilot/tls
+# Scheduled jobs of the service, each with its own NetworkPolicy (DNS + egress only, no ingress), e.g.
+#   - name: purge
+#     schedule: "17 * * * *"
+#     args: [purge]
+#     env: []
+#     envFrom: []
+#     egress: []            # NetworkPolicyEgressRule list; the job's own policy, not the server's
+#     activeDeadlineSeconds: 3300
+cronJobs: []
+cronJobDefaults:
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  backoffLimit: 1
+  activeDeadlineSeconds: 3300
+  ttlSecondsAfterFinished: 86400
   resources:
     requests:
       cpu: 50m

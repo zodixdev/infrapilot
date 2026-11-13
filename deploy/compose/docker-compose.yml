@@ -22,7 +22,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: postgres
       KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
-      INFRAPILOT_SERVICES: ${INFRAPILOT_SERVICES:-}
+      INFRAPILOT_SERVICES: ${INFRAPILOT_SERVICES:-controlplane} # databases provisioned by make db-provision (ADR-0018)
       INFRAPILOT_SERVICE_DB_PASSWORD: ${INFRAPILOT_SERVICE_DB_PASSWORD:-}
     command:
       - postgres

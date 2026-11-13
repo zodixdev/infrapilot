@@ -1,0 +1,10 @@
+apiVersion: v2
+name: control-plane
+description: InfraPilot control-plane — organizations, projects, memberships, resources, API keys, authorization (internal gRPC).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  - name: infrapilot-lib
+    version: 0.2.0
+    repository: file://../infrapilot-lib

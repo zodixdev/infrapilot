@@ -61,9 +61,11 @@ spec:
           securityContext:
             {{- toYaml $v.securityContext | nindent 12 }}
           ports:
+            {{- if $v.ports.http }}
             - name: http
               containerPort: {{ $v.ports.http }}
               protocol: TCP
+            {{- end }}
             - name: admin
               containerPort: {{ $v.ports.admin }}
               protocol: TCP
@@ -92,6 +94,11 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if $v.tls.enabled }}
+            - name: tls
+              mountPath: {{ $v.tls.mountPath }}
+              readOnly: true
+            {{- end }}
             {{- with $v.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -99,6 +106,12 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
+        {{- if $v.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ include "infrapilot-lib.fullname" . }}-tls
+            defaultMode: 0440
+        {{- end }}
         {{- with $v.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

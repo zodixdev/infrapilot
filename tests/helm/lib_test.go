@@ -5,6 +5,7 @@ package helm_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -298,4 +299,70 @@ func TestLibChart_TestPodsAreNotWorkloadPods(t *testing.T) {
 			"test pod %s must not match the workload selector (Service endpoints, NetworkPolicy subject)", o.Metadata["name"])
 		require.Equal(t, "test", labels["app.kubernetes.io/component"])
 	}
+}
+
+func TestLibChart_EnvironmentIsRequired(t *testing.T) {
+	t.Parallel()
+	chart := chartDir(t)
+	out, err := exec.CommandContext(t.Context(), "helm", "template", "x", chart, "--set", "environment=").CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(out), "environment is required", "production safety rails depend on ENVIRONMENT")
+	objs := render(t)
+	env := containerEnv(t, find(t, objs, "Deployment", "conformance"))
+	require.Equal(t, "test", env["ENVIRONMENT"])
+}
+
+func TestLibChart_HeadlessGRPCService(t *testing.T) {
+	t.Parallel()
+	svc := find(t, render(t), "Service", "conformance-grpc")
+	require.Equal(t, "None", svc.Spec["clusterIP"], "clients balance across pods by DNS")
+}
+
+func TestLibChart_WorkloadCertificate(t *testing.T) {
+	t.Parallel()
+	objs := render(t, "--set", "tls.enabled=true", "--api-versions", "cert-manager.io/v1")
+	cert := find(t, objs, "Certificate", "conformance")
+	require.Equal(t, []any{"spiffe://infrapilot.local/ns/infrapilot-test/sa/conformance"}, cert.Spec["uris"])
+	require.Equal(t, "conformance-tls", cert.Spec["secretName"])
+	dep := find(t, objs, "Deployment", "conformance")
+	env := containerEnv(t, dep)
+	require.Equal(t, "/etc/infrapilot/tls/tls.crt", env["GRPC_TLS_CERT_FILE"])
+	require.Equal(t, "/etc/infrapilot/tls/ca.crt", env["GRPC_TLS_CLIENT_CA_FILE"], "mTLS: client certificates are required")
+	require.Contains(t, toJSON(t, podSpec(t, dep)["volumes"]), `"secretName":"conformance-tls"`)
+}
+
+func TestLibChart_CronJobsAreHardenedAndIsolated(t *testing.T) {
+	t.Parallel()
+	objs := render(t, "--set", "cronJobs[0].name=purge", "--set", "cronJobs[0].schedule=17 * * * *", "--set", "cronJobs[0].args[0]=purge")
+	cj := find(t, objs, "CronJob", "conformance-purge")
+	require.Equal(t, "Forbid", cj.Spec["concurrencyPolicy"])
+	pod := dig(t, cj.Spec, "jobTemplate", "spec", "template", "spec").(map[string]any)
+	require.Equal(t, false, pod["automountServiceAccountToken"])
+	require.Equal(t, true, dig(t, pod, "securityContext", "runAsNonRoot"))
+	c := pod["containers"].([]any)[0].(map[string]any)
+	require.Equal(t, true, dig(t, c, "securityContext", "readOnlyRootFilesystem"))
+	require.Equal(t, []any{"purge"}, c["args"])
+	np := find(t, objs, "NetworkPolicy", "conformance-purge")
+	require.Equal(t, []any{}, np.Spec["ingress"], "jobs accept no connections")
+	require.Equal(t, "job-purge", dig(t, np.Spec, "podSelector", "matchLabels", "app.kubernetes.io/component"))
+}
+
+func containerEnv(t *testing.T, o object) map[string]string {
+	t.Helper()
+	c := podSpec(t, o)["containers"].([]any)[0].(map[string]any)
+	out := map[string]string{}
+	for _, e := range c["env"].([]any) {
+		m := e.(map[string]any)
+		if v, ok := m["value"].(string); ok {
+			out[m["name"].(string)] = v
+		}
+	}
+	return out
+}
+
+func toJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return string(b)
 }

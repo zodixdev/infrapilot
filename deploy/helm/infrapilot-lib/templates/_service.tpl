@@ -36,10 +36,12 @@ spec:
   selector:
     {{- include "infrapilot-lib.workloadSelectorLabels" . | nindent 4 }}
   ports:
+    {{- if $v.ports.http }}
     - name: http
       port: {{ $v.ports.http }}
       targetPort: http
       protocol: TCP
+    {{- end }}
     - name: admin
       port: {{ $v.ports.admin }}
       targetPort: admin
@@ -51,6 +53,28 @@ spec:
       protocol: TCP
       appProtocol: grpc
     {{- end }}
+{{- if $v.ports.grpc }}
+---
+# Headless Service for gRPC clients: dns:///<name>-grpc.<ns>.svc resolves every ready pod, so the client's
+# round-robin balancer spreads RPCs (a ClusterIP would pin each long-lived HTTP/2 connection to one pod).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "infrapilot-lib.fullname" . }}-grpc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "infrapilot-lib.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "infrapilot-lib.workloadSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: grpc
+      port: {{ $v.ports.grpc }}
+      targetPort: grpc
+      protocol: TCP
+      appProtocol: grpc
+{{- end }}
 {{- end -}}
 
 {{- define "infrapilot-lib.pdb" -}}

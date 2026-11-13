@@ -31,7 +31,7 @@ type Config struct {
 	BatchDatabaseURL string `env:"BATCH_DATABASE_URL" envDefault:""`
 	DBMaxConns       int32  `env:"DB_MAX_CONNS" envDefault:"10"`
 	// EdgeIdentities are the workload identities allowed to act for end users (ADR-0025).
-	EdgeIdentities []string      `env:"EDGE_IDENTITIES" envSeparator:","`
+	EdgeIdentities []string      `env:"EDGE_IDENTITIES" envSeparator:"," envDefault:""`
 	MigrateTimeout time.Duration `env:"MIGRATE_TIMEOUT" envDefault:"9m"`
 	PurgeTimeout   time.Duration `env:"PURGE_TIMEOUT" envDefault:"50m"`
 }

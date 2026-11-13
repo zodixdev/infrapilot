@@ -1,0 +1,54 @@
+# control-plane values. Environment-specific files (deploy/kind/values/…) set environment, image and egress.
+# Secrets are never set here: the Secret control-plane-db (keys app-url, migrator-url, batch-url) is created by
+# the platform (External Secrets in prod, the kind deploy script locally).
+environment: ""
+image:
+  repository: infrapilot/control-plane
+  tag: ""
+replicaCount: 2
+ports:
+  http: null   # internal gRPC + admin only
+  admin: 8081
+  grpc: 9090
+resources:
+  requests:
+    cpu: 100m
+    memory: 96Mi
+  limits:
+    memory: 256Mi
+tls:
+  enabled: true
+env:
+  - name: DATABASE_URL
+    valueFrom:
+      secretKeyRef: {name: control-plane-db, key: app-url}
+  # Workload identities allowed to act for end users (ADR-0025): the api-gateway's ServiceAccount.
+  - name: EDGE_IDENTITIES
+    value: spiffe://infrapilot.local/ns/infrapilot/sa/api-gateway
+  - name: DB_MAX_CONNS
+    value: "10"
+networkPolicy:
+  ingress:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: api-gateway
+  egress:
+    rules: []   # the database; set per environment
+migration:
+  enabled: true
+  args: [migrate]
+  env:
+    - name: MIGRATION_DATABASE_URL
+      valueFrom:
+        secretKeyRef: {name: control-plane-db, key: migrator-url}
+  egress: []   # the database; set per environment
+cronJobs:
+  # Retention (ADR-0027), hourly. Pushes its metrics over OTLP (short-lived job, ADR-0019).
+  - name: purge
+    schedule: "17 * * * *"
+    args: [purge]
+    env:
+      - name: BATCH_DATABASE_URL
+        valueFrom:
+          secretKeyRef: {name: control-plane-db, key: batch-url}
+    egress: []  # database + OTLP collector; set per environment
