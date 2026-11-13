@@ -169,7 +169,8 @@ func TestCommon_ValidProductionConfig(t *testing.T) {
 func TestGRPCClient_ValidateFor(t *testing.T) {
 	t.Parallel()
 	valid := config.GRPCClient{Target: "dns:///control-plane:9090", TLSCAFile: "/tls/ca.crt",
-		TLSCertFile: "/tls/tls.crt", TLSKeyFile: "/tls/tls.key", Timeout: time.Second}
+		TLSCertFile: "/tls/tls.crt", TLSKeyFile: "/tls/tls.key", Timeout: time.Second,
+		ServerIdentity: "spiffe://infrapilot.local/ns/infrapilot/sa/control-plane"}
 	require.NoError(t, valid.ValidateFor(config.EnvProd))
 	tests := []struct {
 		name string
@@ -185,6 +186,11 @@ func TestGRPCClient_ValidateFor(t *testing.T) {
 		{"insecure in prod", func(c *config.GRPCClient) {
 			*c = config.GRPCClient{Target: "x:1", Timeout: time.Second, Insecure: true}
 		}, config.EnvProd, "INSECURE is not allowed in prod"},
+		{"no server identity in prod", func(c *config.GRPCClient) { c.ServerIdentity = "" }, config.EnvProd, "SERVER_IDENTITY is required in prod"},
+		{"non-canonical server identity", func(c *config.GRPCClient) { c.ServerIdentity = "spiffe://infrapilot.local/ns/a/sa/%62" }, config.EnvDev, "SERVER_IDENTITY"},
+		{"identity with insecure", func(c *config.GRPCClient) {
+			*c = config.GRPCClient{Target: "x:1", Timeout: time.Second, Insecure: true, ServerIdentity: "spiffe://infrapilot.local/ns/a/sa/b"}
+		}, config.EnvDev, "cannot be verified with INSECURE"},
 		{"no client cert in staging", func(c *config.GRPCClient) { c.TLSCertFile, c.TLSKeyFile = "", "" }, config.EnvStaging, "TLS_CERT_FILE is required in staging"},
 	}
 	for _, tt := range tests {

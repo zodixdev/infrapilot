@@ -72,6 +72,13 @@ func SPIFFE(namespace, serviceAccount string) string {
 // URI SANs, and returns its files.
 func (ca *CA) Issue(name string, uris ...string) Files {
 	ca.t.Helper()
+	return ca.IssueWithUsage(name, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}, uris...)
+}
+
+// IssueWithUsage is Issue with explicit extended key usages (e.g. client auth only, to prove a server
+// certificate check).
+func (ca *CA) IssueWithUsage(name string, usage []x509.ExtKeyUsage, uris ...string) Files {
+	ca.t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(ca.t, err)
 	tmpl := &x509.Certificate{
@@ -81,7 +88,7 @@ func (ca *CA) Issue(name string, uris ...string) Files {
 		NotAfter:     time.Now().Add(time.Hour),
 		DNSNames:     []string{"localhost"},
 		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		ExtKeyUsage:  usage,
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 	}
 	for _, u := range uris {

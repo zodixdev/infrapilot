@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -51,7 +52,8 @@ func (p *Pool) WithUserTx(ctx context.Context, userID uuid.UUID, fn func(ctx con
 	if p.bypassRLS {
 		return ErrBypassRLS
 	}
-	return p.runTx(ctx, "", userID.String(), fn, append(opts, ReadOnly()))
+	// Concat copies: appending to opts could write into the caller's backing array.
+	return p.runTx(ctx, "", userID.String(), fn, slices.Concat(opts, []TxOption{ReadOnly()}))
 }
 
 // WithSystemTx runs fn with the tenant and user contexts explicitly cleared. Use it for service-internal

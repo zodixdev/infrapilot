@@ -330,6 +330,13 @@ func TestTenantSchemaRules_Integration(t *testing.T) {
 		`CREATE UNIQUE INDEX notes_slug_key ON notes (slug)`,
 		`CREATE TABLE unscoped (id int PRIMARY KEY)`,
 		`CREATE FUNCTION peek() RETURNS bigint LANGUAGE sql SECURITY DEFINER AS 'SELECT count(*) FROM notes'`,
+		// A tenant-blind foreign key to another tenant table reveals that table's ids through FK errors.
+		`CREATE TABLE tags (id BIGINT PRIMARY KEY, organization_id UUID NOT NULL)`,
+		`ALTER TABLE notes ADD COLUMN tag_id BIGINT REFERENCES tags (id)`,
+		// A pre-tenant lookup table (ADR-0018) carries organization_id but is not tenant data.
+		`CREATE TABLE key_index (key_hash BYTEA PRIMARY KEY, organization_id UUID NOT NULL, owner_id INT REFERENCES unscoped (id))`,
+		// A foreign key to a non-tenant table (global identities) reveals nothing about other tenants.
+		`ALTER TABLE notes ADD COLUMN author_id INT REFERENCES unscoped (id)`,
 	} {
 		_, execErr := conn.Exec(ctx, s)
 		require.NoError(t, execErr, s)
@@ -341,18 +348,21 @@ func TestTenantSchemaRules_Integration(t *testing.T) {
 	require.Contains(t, joined, `unique index "notes_slug_key"`)
 	require.Contains(t, joined, `table "unscoped" has no organization_id`)
 	require.Contains(t, joined, `SECURITY DEFINER function "peek"`)
+	require.Contains(t, joined, `foreign key "notes_tag_id_fkey"`)
+	require.Contains(t, joined, `tenant table "key_index" must ENABLE ROW LEVEL SECURITY`, "undeclared lookup tables are tenant tables")
 
 	// The compliant forms pass.
 	for _, s := range []string{
-		`DROP VIEW all_notes`, `CREATE VIEW all_notes WITH (security_invoker = true) AS SELECT * FROM notes`,
+		`DROP VIEW all_notes`, `ALTER TABLE notes DROP COLUMN tag_id`, `DROP TABLE tags`,
+		`CREATE VIEW all_notes WITH (security_invoker = true) AS SELECT * FROM notes`,
 		`DROP INDEX notes_slug_key`, `CREATE UNIQUE INDEX notes_org_slug_key ON notes (organization_id, slug)`,
 	} {
 		_, execErr := conn.Exec(ctx, s)
 		require.NoError(t, execErr, s)
 	}
-	v, err = pgtest.TenantSchemaViolations(ctx, conn, pgtest.AppRole, []string{"unscoped"}, []string{"peek"})
+	v, err = pgtest.TenantSchemaViolations(ctx, conn, pgtest.AppRole, []string{"unscoped", "key_index"}, []string{"peek"})
 	require.NoError(t, err)
-	require.Empty(t, v)
+	require.Empty(t, v, "declared lookup tables and foreign keys to non-tenant tables are accepted")
 }
 
 // TestHealthCheck_SaturatedPoolIsBusyNotDown: with every connection in use the probe times out acquiring,

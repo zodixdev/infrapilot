@@ -54,7 +54,7 @@ type Server struct {
 	mp     metric.MeterProvider
 	unary  []grpc.UnaryServerInterceptor
 	stream []grpc.StreamServerInterceptor
-	peers  *PeerPolicy
+	peers  *peerPolicy
 }
 
 // Option configures the server.
@@ -94,10 +94,6 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*Server, error) {
 	if cfg.MaxConnectionAgeGrace <= 0 {
 		cfg.MaxConnectionAgeGrace = cfg.KeepaliveTimeout
 	}
-	creds, err := transportCredentials(cfg)
-	if err != nil {
-		return nil, err
-	}
 	if cfg.ConnectionTimeout <= 0 || cfg.KeepaliveTime <= 0 || cfg.KeepaliveTimeout <= 0 {
 		return nil, errors.New("grpcserver: timeouts must be positive")
 	}
@@ -114,6 +110,10 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*Server, error) {
 	for _, o := range opts {
 		o(s)
 	}
+	creds, err := transportCredentials(cfg, s.log, s.mp, s.name)
+	if err != nil {
+		return nil, err
+	}
 	std, stdStream, err := standardInterceptors(s.log, s.mp, cfg.DefaultTimeout) //nolint:contextcheck // stream interceptors take ctx from ss.Context()
 	if err != nil {
 		return nil, err
@@ -123,7 +123,10 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*Server, error) {
 		if vErr := s.peers.validate(); vErr != nil {
 			return nil, vErr
 		}
-		pu, ps := s.peers.interceptors(s.log)
+		pu, ps, pErr := s.peers.interceptors(s.log, s.mp)
+		if pErr != nil {
+			return nil, pErr
+		}
 		std, stdStream = append(std, pu), append(stdStream, ps)
 	}
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.Addr)

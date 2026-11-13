@@ -11,8 +11,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -29,12 +33,14 @@ import (
 
 	"github.com/zodixdev/infrapilot/pkg/config"
 	"github.com/zodixdev/infrapilot/pkg/internal/tlsreload"
+	"github.com/zodixdev/infrapilot/pkg/internal/workloadid"
 )
 
 // MaxAttempts bounds transparent retries of idempotent RPCs (first attempt included).
 const MaxAttempts = 3
 
 type options struct {
+	log        *slog.Logger
 	tp         trace.TracerProvider
 	mp         metric.MeterProvider
 	idempotent []string
@@ -43,6 +49,9 @@ type options struct {
 
 // Option configures a client connection.
 type Option func(*options)
+
+// WithLogger sets the logger used for TLS reload failures.
+func WithLogger(l *slog.Logger) Option { return func(o *options) { o.log = l } }
 
 // WithTracerProvider enables client spans and trace-context propagation.
 func WithTracerProvider(tp trace.TracerProvider) Option { return func(o *options) { o.tp = tp } }
@@ -59,16 +68,17 @@ func WithIdempotent(methods ...string) Option {
 // WithUpstream names the upstream service in metrics (default: the target).
 func WithUpstream(name string) Option { return func(o *options) { o.upstream = name } }
 
-// New creates a lazily connecting client connection. Close it on shutdown.
-func New(cfg config.GRPCClient, opts ...Option) (*grpc.ClientConn, error) {
-	o := options{tp: tracenoop.NewTracerProvider(), mp: metricnoop.NewMeterProvider(), upstream: cfg.Target}
+// New validates cfg for the environment (ADR-0025 rails) and creates a lazily connecting client connection.
+// Close it on shutdown.
+func New(cfg config.GRPCClient, env config.Environment, opts ...Option) (*grpc.ClientConn, error) {
+	o := options{log: slog.New(slog.DiscardHandler), tp: tracenoop.NewTracerProvider(), mp: metricnoop.NewMeterProvider(), upstream: cfg.Target}
 	for _, opt := range opts {
 		opt(&o)
 	}
-	if cfg.Timeout <= 0 {
-		return nil, errors.New("grpcclient: Timeout must be positive")
+	if err := cfg.ValidateFor(env); err != nil {
+		return nil, fmt.Errorf("grpcclient: %w", err)
 	}
-	creds, err := transportCredentials(cfg)
+	creds, err := transportCredentials(&cfg, &o)
 	if err != nil {
 		return nil, err
 	}
@@ -76,18 +86,22 @@ func New(cfg config.GRPCClient, opts ...Option) (*grpc.ClientConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	interceptor, err := unaryInterceptor(o.mp, o.upstream, cfg.Timeout)
+	unary, stream, err := interceptors(o.mp, o.upstream, cfg.Timeout)
 	if err != nil {
 		return nil, err
 	}
 	conn, err := grpc.NewClient(cfg.Target,
 		grpc.WithTransportCredentials(creds),
+		// The service config (balancing, which RPCs may be retried) is ours alone: never accept one from DNS
+		// TXT records, which could enable retries of non-idempotent methods.
+		grpc.WithDisableServiceConfig(),
 		grpc.WithDefaultServiceConfig(sc),
 		grpc.WithStatsHandler(otelgrpc.NewClientHandler(
 			otelgrpc.WithTracerProvider(o.tp),
 			otelgrpc.WithMeterProvider(metricnoop.NewMeterProvider()),
 		)),
-		grpc.WithChainUnaryInterceptor(interceptor),
+		grpc.WithChainUnaryInterceptor(unary),
+		grpc.WithChainStreamInterceptor(stream),
 		// Must respect the server's enforcement policy (MinTime = server KeepaliveTime/2 = 15 s by default).
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{Time: 30 * time.Second, Timeout: 10 * time.Second}),
 	)
@@ -97,27 +111,35 @@ func New(cfg config.GRPCClient, opts ...Option) (*grpc.ClientConn, error) {
 	return conn, nil
 }
 
-func transportCredentials(cfg config.GRPCClient) (credentials.TransportCredentials, error) {
+func transportCredentials(cfg *config.GRPCClient, o *options) (credentials.TransportCredentials, error) {
 	if cfg.Insecure {
 		return insecure.NewCredentials(), nil
-	}
-	if cfg.TLSCAFile == "" {
-		return nil, errors.New("grpcclient: TLSCAFile is required unless Insecure")
-	}
-	m, err := tlsreload.Load(cfg.TLSCertFile, cfg.TLSKeyFile, cfg.TLSCAFile)
-	if err != nil {
-		return nil, fmt.Errorf("grpcclient: %w", err)
 	}
 	serverName := cfg.ServerName
 	if serverName == "" {
 		serverName = targetHost(cfg.Target)
+	}
+	if serverName == "" {
+		// x509 verification with an empty name skips the host check; crypto/tls refuses it, and so do we.
+		return nil, fmt.Errorf("grpcclient: cannot derive a server name from target %q; set ServerName", cfg.Target)
+	}
+	m, err := tlsreload.Load(cfg.TLSCertFile, cfg.TLSKeyFile, cfg.TLSCAFile, tlsreload.OnError(func(err error) {
+		o.log.Error("grpc client TLS material reload failed; keeping the previous material",
+			slog.String("upstream", o.upstream), slog.Any("error", err))
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("grpcclient: %w", err)
+	}
+	if err := registerExpiry(o.mp, m, o.upstream); err != nil {
+		return nil, err
 	}
 	tc := &tls.Config{
 		MinVersion: tls.VersionTLS13,
 		ServerName: serverName,
 		// Verification against the *current* CA bundle happens in VerifyConnection so CA rotation needs no
 		// restart; the standard verifier would pin the bundle loaded at startup. VerifyConnection runs on every
-		// handshake, also when InsecureSkipVerify is set.
+		// handshake, also when InsecureSkipVerify is set, and the handshake still checks the server's proof of
+		// possession of the key. No ClientSessionCache is set, so there is no resumption.
 		InsecureSkipVerify: true, //nolint:gosec // replaced by verifyServer below, which performs full chain + name checks
 		VerifyConnection: func(cs tls.ConnectionState) error {
 			_, pool := m.Current()
@@ -133,11 +155,31 @@ func transportCredentials(cfg config.GRPCClient) (credentials.TransportCredentia
 	return credentials.NewTLS(tc), nil
 }
 
+func registerExpiry(mp metric.MeterProvider, m *tlsreload.Material, upstream string) error {
+	_, err := mp.Meter("github.com/zodixdev/infrapilot/pkg/grpcclient").Float64ObservableGauge(
+		"tls_certificate_expiry_timestamp_seconds",
+		metric.WithDescription("Expiry (Unix seconds) of the TLS certificate currently in use"), metric.WithUnit("s"),
+		metric.WithFloat64Callback(func(_ context.Context, obs metric.Float64Observer) error {
+			if na := m.NotAfter(); !na.IsZero() {
+				obs.Observe(float64(na.Unix()), metric.WithAttributes(attribute.String("role", "client"), attribute.String("name", upstream)))
+			}
+			return nil
+		}))
+	if err != nil {
+		return fmt.Errorf("grpcclient: create expiry gauge: %w", err)
+	}
+	return nil
+}
+
 // verifyServer performs the checks crypto/tls would do (chain to roots, server auth usage, host name) and, when
 // configured, pins the server's workload identity.
 func verifyServer(cs tls.ConnectionState, roots *x509.CertPool, serverName, identity string) error {
 	if len(cs.PeerCertificates) == 0 {
 		return errors.New("grpcclient: server presented no certificate")
+	}
+	if roots == nil || serverName == "" {
+		// x509 would fall back to the system roots / skip the name check; never verify that way.
+		return errors.New("grpcclient: no CA bundle or server name to verify against")
 	}
 	leaf := cs.PeerCertificates[0]
 	inter := x509.NewCertPool()
@@ -153,23 +195,29 @@ func verifyServer(cs tls.ConnectionState, roots *x509.CertPool, serverName, iden
 	if identity == "" {
 		return nil
 	}
-	for _, u := range leaf.URIs {
-		if u.String() == identity {
-			return nil
-		}
+	if got, err := workloadid.FromCertificate(leaf); err != nil || got != identity {
+		return fmt.Errorf("grpcclient: server identity is not %s", identity)
 	}
-	return fmt.Errorf("grpcclient: server identity is not %s", identity)
+	return nil
 }
 
-// targetHost extracts the host from "dns:///host:port", "host:port" or "host".
+// targetHost derives the TLS server name from a gRPC target: "dns:///host:port", "dns://resolver/host:port",
+// "host:port" or "host". Other schemes (unix:, passthrough with odd endpoints) yield "" and require ServerName.
 func targetHost(target string) string {
-	if i := strings.Index(target, ":///"); i >= 0 {
-		target = target[i+4:]
+	endpoint := target
+	if strings.Contains(target, "://") {
+		u, err := url.Parse(target)
+		if err != nil || (u.Scheme != "dns" && u.Scheme != "passthrough") {
+			return ""
+		}
+		endpoint = strings.TrimPrefix(u.Path, "/")
+	} else if strings.HasPrefix(target, "unix:") {
+		return ""
 	}
-	if h, _, err := net.SplitHostPort(target); err == nil {
+	if h, _, err := net.SplitHostPort(endpoint); err == nil {
 		return h
 	}
-	return target
+	return endpoint
 }
 
 // serviceConfig enables round-robin balancing and a retry policy for the idempotent methods only.
@@ -189,9 +237,15 @@ func serviceConfig(idempotent []string) (string, error) {
 		Name        []name       `json:"name"`
 		RetryPolicy *retryPolicy `json:"retryPolicy,omitempty"`
 	}
+	type retryThrottling struct {
+		MaxTokens  int     `json:"maxTokens"`
+		TokenRatio float64 `json:"tokenRatio"`
+	}
 	sc := struct {
 		LoadBalancingConfig []map[string]any `json:"loadBalancingConfig"`
 		MethodConfig        []methodConfig   `json:"methodConfig,omitempty"`
+		// Retry budget: retries stop while more than half of recent calls failed, so an outage is not amplified.
+		RetryThrottling *retryThrottling `json:"retryThrottling,omitempty"`
 	}{LoadBalancingConfig: []map[string]any{{"round_robin": map[string]any{}}}}
 	if len(idempotent) > 0 {
 		mc := methodConfig{RetryPolicy: &retryPolicy{
@@ -211,6 +265,7 @@ func serviceConfig(idempotent []string) (string, error) {
 			mc.Name = append(mc.Name, n)
 		}
 		sc.MethodConfig = []methodConfig{mc}
+		sc.RetryThrottling = &retryThrottling{MaxTokens: 10, TokenRatio: 0.1}
 	}
 	b, err := json.Marshal(sc)
 	if err != nil {
@@ -219,26 +274,21 @@ func serviceConfig(idempotent []string) (string, error) {
 	return string(b), nil
 }
 
-func unaryInterceptor(mp metric.MeterProvider, upstream string, timeout time.Duration) (grpc.UnaryClientInterceptor, error) {
+// interceptors record client RED metrics. Unary calls without a deadline get the default timeout; streams keep
+// the caller's context (long-lived streams are bounded by their owner, not by a per-call default).
+func interceptors(mp metric.MeterProvider, upstream string, timeout time.Duration) (grpc.UnaryClientInterceptor, grpc.StreamClientInterceptor, error) {
 	m := mp.Meter("github.com/zodixdev/infrapilot/pkg/grpcclient")
 	handled, err := m.Int64Counter("grpc_client_handled_total", metric.WithDescription("Client RPCs completed, by code"))
 	if err != nil {
-		return nil, fmt.Errorf("grpcclient: create counter: %w", err)
+		return nil, nil, fmt.Errorf("grpcclient: create counter: %w", err)
 	}
 	dur, err := m.Float64Histogram("grpc_client_handling_seconds",
 		metric.WithDescription("Client RPC latency including retries"), metric.WithUnit("s"),
 		metric.WithExplicitBucketBoundaries(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10))
 	if err != nil {
-		return nil, fmt.Errorf("grpcclient: create histogram: %w", err)
+		return nil, nil, fmt.Errorf("grpcclient: create histogram: %w", err)
 	}
-	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-		if _, ok := ctx.Deadline(); !ok {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, timeout)
-			defer cancel()
-		}
-		start := time.Now()
-		err := invoker(ctx, method, req, reply, cc, opts...)
+	observe := func(ctx context.Context, method string, start time.Time, err error) {
 		svc, meth := splitMethod(method)
 		attrs := metric.WithAttributes(
 			attribute.String("grpc_upstream", upstream),
@@ -248,8 +298,47 @@ func unaryInterceptor(mp metric.MeterProvider, upstream string, timeout time.Dur
 		)
 		handled.Add(ctx, 1, attrs)
 		dur.Record(ctx, time.Since(start).Seconds(), attrs)
+	}
+	unary := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		if _, ok := ctx.Deadline(); !ok {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+		}
+		start := time.Now()
+		err := invoker(ctx, method, req, reply, cc, opts...)
+		observe(ctx, method, start, err)
 		return err
-	}, nil
+	}
+	stream := func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		start := time.Now()
+		cs, err := streamer(ctx, desc, cc, method, opts...)
+		if err != nil {
+			observe(ctx, method, start, err)
+			return nil, err
+		}
+		return &observedStream{ClientStream: cs, done: func(err error) { observe(context.WithoutCancel(ctx), method, start, err) }}, nil
+	}
+	return unary, stream, nil
+}
+
+// observedStream records the stream's outcome once, when RecvMsg returns the final status.
+type observedStream struct {
+	grpc.ClientStream
+	once sync.Once
+	done func(error)
+}
+
+func (s *observedStream) RecvMsg(m any) error {
+	err := s.ClientStream.RecvMsg(m)
+	if err != nil {
+		final := err
+		if errors.Is(err, io.EOF) {
+			final = nil
+		}
+		s.once.Do(func() { s.done(final) })
+	}
+	return err
 }
 
 func splitMethod(full string) (service, method string) {

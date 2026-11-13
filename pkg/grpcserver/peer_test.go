@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -35,6 +37,16 @@ var identityDesc = grpc.ServiceDesc{
 		{MethodName: "Edge", Handler: whoami("Edge")},
 		{MethodName: "Any", Handler: whoami("Any")},
 	},
+	Streams: []grpc.StreamDesc{{
+		StreamName: "Watch", ServerStreams: true,
+		Handler: func(_ any, ss grpc.ServerStream) error {
+			if err := ss.RecvMsg(new(emptypb.Empty)); err != nil {
+				return err
+			}
+			id, _ := grpcserver.PeerIdentity(ss.Context())
+			return ss.SendMsg(wrapperspb.String(id))
+		},
+	}},
 	Metadata: "peer_test.go",
 }
 
@@ -60,16 +72,17 @@ var (
 func peerPolicy(insecureID string) grpcserver.PeerPolicy {
 	return grpcserver.PeerPolicy{
 		Rules: map[string][]string{
-			"/" + identityService + "/Edge": {gatewayID},
-			"/" + identityService + "/*":    {gatewayID, workerID},
+			"/" + identityService + "/Edge":  {gatewayID},
+			"/" + identityService + "/Watch": {gatewayID},
+			"/" + identityService + "/*":     {gatewayID, workerID},
 		},
 		InsecureIdentity: insecureID,
 	}
 }
 
-func startWithPolicy(t *testing.T, cfg grpcserver.Config, p grpcserver.PeerPolicy) string {
+func startWithPolicy(t *testing.T, cfg grpcserver.Config, p grpcserver.PeerPolicy, opts ...grpcserver.Option) string {
 	t.Helper()
-	s, err := grpcserver.New(t.Context(), cfg, grpcserver.WithPeerPolicy(p))
+	s, err := grpcserver.New(t.Context(), cfg, append(opts, grpcserver.WithPeerPolicy(p))...)
 	require.NoError(t, err)
 	s.Registrar().RegisterService(&identityDesc, struct{}{})
 	s.SetServing(true)
@@ -179,8 +192,56 @@ func TestPeerPolicy_Validation(t *testing.T) {
 		"rule without leading slash": {Rules: map[string][]string{"svc/Method": {gatewayID}}},
 		"identity not spiffe":        {Rules: map[string][]string{"/svc/Method": {"api-gateway"}}},
 		"insecure identity":          {InsecureIdentity: "gateway"},
+		"empty method segment":       {Rules: map[string][]string{"/svc/": {gatewayID}}},
+		"empty identity list":        {Rules: map[string][]string{"/svc/Method": {}}},
+		"non-canonical identity":     {Rules: map[string][]string{"/svc/Method": {"spiffe://infrapilot.local/ns/a/sa/%62"}}},
 	} {
 		_, err := grpcserver.New(t.Context(), testConfig(), grpcserver.WithPeerPolicy(p))
 		require.Error(t, err, name)
 	}
+}
+
+func TestPeerPolicy_StreamsAndDenialMetric(t *testing.T) {
+	t.Parallel()
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.WithoutCancel(t.Context())) })
+	ca := certtest.NewCA(t)
+	srv := ca.Issue("server")
+	cfg := testConfig()
+	cfg.TLSCertFile, cfg.TLSKeyFile, cfg.TLSClientCAFile = srv.Cert, srv.Key, ca.File
+	addr := startWithPolicy(t, cfg, peerPolicy(""), grpcserver.WithMeterProvider(mp))
+
+	watch := func(f certtest.Files) (string, error) {
+		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(mtlsCreds(t, ca, &f)))
+		require.NoError(t, err)
+		defer func() { _ = conn.Close() }()
+		st, err := conn.NewStream(t.Context(), &identityDesc.Streams[0], "/"+identityService+"/Watch")
+		require.NoError(t, err)
+		require.NoError(t, st.SendMsg(&emptypb.Empty{}))
+		require.NoError(t, st.CloseSend())
+		out := new(wrapperspb.StringValue)
+		err = st.RecvMsg(out)
+		return out.GetValue(), err
+	}
+	got, err := watch(ca.Issue("gw", gatewayID))
+	require.NoError(t, err)
+	require.Equal(t, gatewayID, got, "stream handlers see the verified identity")
+
+	_, err = watch(ca.Issue("worker", workerID))
+	require.Equal(t, codes.PermissionDenied, status.Code(err))
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(t.Context(), &rm))
+	var denied int64
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if sum, ok := m.Data.(metricdata.Sum[int64]); ok && m.Name == "grpc_server_peer_denied_total" {
+				for _, dp := range sum.DataPoints {
+					denied += dp.Value
+				}
+			}
+		}
+	}
+	require.EqualValues(t, 1, denied)
 }

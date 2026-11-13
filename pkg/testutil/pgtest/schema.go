@@ -32,8 +32,11 @@ func AssertTenantSchema(t *testing.T, url, appRole string, nonTenant, allowedDef
 //     server-generated surrogates (UUIDv7 or identity) that a client can never choose.
 //
 // For the whole schema: no view without security_invoker (views owned by the migrator bypass RLS) and no
-// SECURITY DEFINER function unless listed in allowedDefiners. nonTenant lists tables that intentionally
-// have no organization_id (outbox, processed_messages, pre-tenant lookup tables).
+// SECURITY DEFINER function unless listed in allowedDefiners. nonTenant lists tables that are not tenant data:
+// tables without organization_id (outbox, processed_messages, global identities) and the pre-tenant lookup
+// tables of ADR-0018, which carry organization_id as the answer of the lookup but are reached only through
+// system transactions. Foreign keys from tenant tables to nonTenant tables are allowed: a violation reveals
+// nothing about another tenant.
 func TenantSchemaViolations(ctx context.Context, conn *pgx.Conn, appRole string, nonTenant, allowedDefiners []string) ([]string, error) {
 	var v []string
 	tables, err := strings(ctx, conn, `
@@ -54,6 +57,7 @@ func TenantSchemaViolations(ctx context.Context, conn *pgx.Conn, appRole string,
 			v = append(v, fmt.Sprintf("table %q has no organization_id and is not declared non-tenant", tbl))
 		}
 	}
+	tenant = slices.DeleteFunc(tenant, func(tbl string) bool { return slices.Contains(nonTenant, tbl) })
 	for _, tbl := range tenant {
 		var rls, canSelect bool
 		var policies int
@@ -90,8 +94,10 @@ func TenantSchemaViolations(ctx context.Context, conn *pgx.Conn, appRole string,
 		badFK, err3 := strings(ctx, conn, `
 			SELECT con.conname FROM pg_constraint con
 			JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attname = 'organization_id'
+			JOIN pg_class ref ON ref.oid = con.confrelid
 			WHERE con.conrelid = to_regclass('public.' || quote_ident($1)) AND con.contype = 'f' AND NOT (a.attnum = ANY (con.conkey))
-			ORDER BY 1`, tbl)
+			  AND NOT (ref.relname = ANY (COALESCE($2::text[], ARRAY[]::text[])))
+			ORDER BY 1`, tbl, nonTenant)
 		if err3 != nil {
 			return nil, err3
 		}

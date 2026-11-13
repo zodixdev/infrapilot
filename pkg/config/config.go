@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
+
+	"github.com/zodixdev/infrapilot/pkg/internal/workloadid"
 )
 
 // Validator is implemented by configuration structs that have cross-field rules.
@@ -176,12 +178,23 @@ func (c *GRPCClient) ValidateFor(environment Environment) error {
 	if (c.TLSCertFile == "") != (c.TLSKeyFile == "") {
 		errs = append(errs, errors.New("gRPC client TLS_CERT_FILE and TLS_KEY_FILE must be set together"))
 	}
+	if c.ServerIdentity != "" {
+		if c.Insecure {
+			errs = append(errs, errors.New("gRPC client SERVER_IDENTITY cannot be verified with INSECURE=true"))
+		}
+		if err := workloadid.Validate(c.ServerIdentity); err != nil {
+			errs = append(errs, fmt.Errorf("gRPC client SERVER_IDENTITY: %w", err))
+		}
+	}
 	if environment == EnvProd || environment == EnvStaging {
 		if c.Insecure {
 			errs = append(errs, fmt.Errorf("gRPC client INSECURE is not allowed in %s", environment))
 		}
 		if c.TLSCertFile == "" {
 			errs = append(errs, fmt.Errorf("gRPC client TLS_CERT_FILE is required in %s (mTLS, ADR-0025)", environment))
+		}
+		if c.ServerIdentity == "" {
+			errs = append(errs, fmt.Errorf("gRPC client SERVER_IDENTITY is required in %s (ADR-0025)", environment))
 		}
 	}
 	return errors.Join(errs...)

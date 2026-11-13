@@ -2,6 +2,9 @@ package grpcclient_test
 
 import (
 	"context"
+	"crypto/x509"
+	"net"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -78,14 +81,31 @@ var (
 
 func startServer(t *testing.T, ca *certtest.CA, insecureID string) (string, *probe) {
 	t.Helper()
-	cfg := grpcserver.Config{
-		Addr: "127.0.0.1:0", MaxRecvMsgBytes: 1 << 20, ConnectionTimeout: 5 * time.Second,
-		KeepaliveTime: 30 * time.Second, KeepaliveTimeout: 10 * time.Second, MaxConcurrentStreams: 16,
-	}
+	cfg := serverConfig()
 	if ca != nil {
 		f := ca.Issue("server", serverID)
 		cfg.TLSCertFile, cfg.TLSKeyFile, cfg.TLSClientCAFile = f.Cert, f.Key, ca.File
 	}
+	return runServer(t, cfg, insecureID)
+}
+
+func startServerWithFiles(t *testing.T, ca *certtest.CA, f certtest.Files) string {
+	t.Helper()
+	cfg := serverConfig()
+	cfg.TLSCertFile, cfg.TLSKeyFile, cfg.TLSClientCAFile = f.Cert, f.Key, ca.File
+	addr, _ := runServer(t, cfg, "")
+	return addr
+}
+
+func serverConfig() grpcserver.Config {
+	return grpcserver.Config{
+		Addr: "127.0.0.1:0", MaxRecvMsgBytes: 1 << 20, ConnectionTimeout: 5 * time.Second,
+		KeepaliveTime: 30 * time.Second, KeepaliveTimeout: 10 * time.Second, MaxConcurrentStreams: 16,
+	}
+}
+
+func runServer(t *testing.T, cfg grpcserver.Config, insecureID string) (string, *probe) {
+	t.Helper()
 	s, err := grpcserver.New(t.Context(), cfg, grpcserver.WithPeerPolicy(grpcserver.PeerPolicy{
 		Rules: map[string][]string{"/" + svc + "/*": {clientID}}, InsecureIdentity: insecureID,
 	}))
@@ -101,9 +121,16 @@ func startServer(t *testing.T, ca *certtest.CA, insecureID string) (string, *pro
 	return s.Addr().String(), p
 }
 
+func copyFile(t *testing.T, from, to string) {
+	t.Helper()
+	b, err := os.ReadFile(from)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(to, b, 0o600))
+}
+
 func dial(t *testing.T, cfg config.GRPCClient, opts ...grpcclient.Option) *grpc.ClientConn {
 	t.Helper()
-	conn, err := grpcclient.New(cfg, opts...)
+	conn, err := grpcclient.New(cfg, config.EnvTest, opts...)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 	return conn
@@ -128,22 +155,77 @@ func TestClient_RejectsUntrustedOrWrongServer(t *testing.T) {
 	cli := ca.Issue("client", clientID)
 	other := certtest.NewCA(t)
 
-	tests := map[string]config.GRPCClient{
-		"server identity mismatch": {ServerIdentity: certtest.SPIFFE("infrapilot", "impostor"), TLSCAFile: ca.File},
-		"server name mismatch":     {ServerName: "control-plane.infrapilot.svc", TLSCAFile: ca.File},
-		"untrusted CA":             {TLSCAFile: other.File},
+	tests := map[string]struct {
+		cfg  config.GRPCClient
+		want string
+	}{
+		"server identity mismatch": {config.GRPCClient{ServerIdentity: certtest.SPIFFE("infrapilot", "impostor"), TLSCAFile: ca.File}, "server identity is not"},
+		"server name mismatch":     {config.GRPCClient{ServerName: "control-plane.infrapilot.svc", TLSCAFile: ca.File}, "verify server certificate"},
+		"untrusted CA":             {config.GRPCClient{TLSCAFile: other.File}, "verify server certificate"},
 	}
-	for name, c := range tests {
+	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
+			c := tc.cfg
 			c.Target, c.Timeout, c.TLSCertFile, c.TLSKeyFile = addr, time.Second, cli.Cert, cli.Key
 			if c.ServerName == "" {
 				c.ServerName = "localhost"
 			}
 			err := dial(t, c).Invoke(t.Context(), "/"+svc+"/Whoami", &emptypb.Empty{}, new(wrapperspb.StringValue))
 			require.Equal(t, codes.Unavailable, status.Code(err), "handshake must fail: %v", err)
+			require.ErrorContains(t, err, tc.want, "the failure is the verification, not something else")
 		})
 	}
+}
+
+func TestClient_RequiresServerAuthUsage(t *testing.T) {
+	t.Parallel()
+	ca := certtest.NewCA(t)
+	// A certificate usable only as a client must not be accepted as a server certificate.
+	srv := ca.IssueWithUsage("client-only-server", []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, serverID)
+	addr := startServerWithFiles(t, ca, srv)
+	cli := ca.Issue("client", clientID)
+	err := dial(t, config.GRPCClient{Target: addr, ServerName: "localhost", TLSCertFile: cli.Cert, TLSKeyFile: cli.Key,
+		TLSCAFile: ca.File, Timeout: time.Second}).Invoke(t.Context(), "/"+svc+"/Whoami", &emptypb.Empty{}, new(wrapperspb.StringValue))
+	require.ErrorContains(t, err, "verify server certificate")
+}
+
+func TestClient_FollowsCARotation(t *testing.T) {
+	t.Parallel()
+	oldCA, newCA := certtest.NewCA(t), certtest.NewCA(t)
+	cli := newCA.Issue("client", clientID)
+	// The server is issued by the new CA; the client starts out trusting only the old one.
+	addr := startServerWithFiles(t, newCA, newCA.Issue("server", serverID))
+	dir := t.TempDir()
+	bundle := dir + "/ca.crt"
+	copyFile(t, oldCA.File, bundle)
+	conn := dial(t, config.GRPCClient{Target: addr, ServerName: "localhost", ServerIdentity: serverID,
+		TLSCertFile: cli.Cert, TLSKeyFile: cli.Key, TLSCAFile: bundle, Timeout: time.Second})
+	call := func() error {
+		return conn.Invoke(t.Context(), "/"+svc+"/Whoami", &emptypb.Empty{}, new(wrapperspb.StringValue))
+	}
+	require.ErrorContains(t, call(), "verify server certificate")
+
+	copyFile(t, newCA.File, bundle)
+	future := time.Now().Add(2 * time.Second)
+	require.NoError(t, os.Chtimes(bundle, future, future))
+	require.Eventually(t, func() bool { return call() == nil }, 10*time.Second, 200*time.Millisecond,
+		"a rotated CA bundle is used without restarting the client")
+}
+
+func TestClient_DerivesServerNameFromTarget(t *testing.T) {
+	t.Parallel()
+	ca := certtest.NewCA(t)
+	addr, _ := startServer(t, ca, "")
+	cli := ca.Issue("client", clientID)
+	_, port, err := net.SplitHostPort(addr)
+	require.NoError(t, err)
+	conn := dial(t, config.GRPCClient{Target: "dns:///localhost:" + port, ServerIdentity: serverID,
+		TLSCertFile: cli.Cert, TLSKeyFile: cli.Key, TLSCAFile: ca.File, Timeout: 2 * time.Second})
+	require.NoError(t, conn.Invoke(t.Context(), "/"+svc+"/Whoami", &emptypb.Empty{}, new(wrapperspb.StringValue)))
+
+	_, err = grpcclient.New(config.GRPCClient{Target: "unix:///run/cp.sock", TLSCAFile: ca.File, Timeout: time.Second}, config.EnvTest)
+	require.ErrorContains(t, err, "set ServerName")
 }
 
 func TestClient_DefaultDeadline(t *testing.T) {
@@ -177,11 +259,13 @@ func TestClient_RetriesOnlyIdempotentMethods(t *testing.T) {
 
 func TestNew_Validation(t *testing.T) {
 	t.Parallel()
-	_, err := grpcclient.New(config.GRPCClient{Target: "x:1", Insecure: true})
-	require.ErrorContains(t, err, "Timeout")
-	_, err = grpcclient.New(config.GRPCClient{Target: "x:1", Timeout: time.Second})
-	require.ErrorContains(t, err, "TLSCAFile")
-	_, err = grpcclient.New(config.GRPCClient{Target: "x:1", Insecure: true, Timeout: time.Second},
+	_, err := grpcclient.New(config.GRPCClient{Target: "x:1", Insecure: true}, config.EnvTest)
+	require.ErrorContains(t, err, "TIMEOUT")
+	_, err = grpcclient.New(config.GRPCClient{Target: "x:1", Timeout: time.Second}, config.EnvTest)
+	require.ErrorContains(t, err, "TLS_CA_FILE")
+	_, err = grpcclient.New(config.GRPCClient{Target: "x:1", Insecure: true, Timeout: time.Second}, config.EnvProd)
+	require.ErrorContains(t, err, "INSECURE is not allowed in prod", "environment rails are enforced by New")
+	_, err = grpcclient.New(config.GRPCClient{Target: "x:1", Insecure: true, Timeout: time.Second}, config.EnvTest,
 		grpcclient.WithIdempotent("pkg.Service/Method"))
 	require.ErrorContains(t, err, "idempotent method")
 }
