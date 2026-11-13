@@ -7,7 +7,24 @@ Redis · MinIO/S3 · Keycloak · Kubernetes/Helm · OpenTelemetry/Prometheus/Gra
 
 > Status: **M01 — engineering platform** complete. Services start in M02. See [roadmap](docs/roadmap.md).
 
-## What exists today (M01)
+## Identity, control plane and gateway (M02)
+
+- **control-plane** (Go, internal gRPC) — organizations, projects, memberships with an owner/admin/operator/viewer
+  matrix, resource inventory, project API keys (hashed, scoped, revocable), append-only audit log and
+  `CheckPermission`. Every tenant table is protected by PostgreSQL row-level security; authorization happens inside
+  the same transaction as the change; creates are idempotent by `Idempotency-Key`; retention runs as an hourly job
+  under a separate role (ADR-0018, 0022–0024, 0027).
+- **api-gateway** (Go, public REST) — generated from the OpenAPI contract; Keycloak tokens verified locally from a
+  cached JWKS (keeps working when Keycloak is down), API keys, GCRA rate limiting in Redis that fails open when Redis
+  is down, request validation, edge pre-authorization with signed caches, problem+json errors (ADR-0026).
+- **Service identity** — cert-manager workload certificates with SPIFFE IDs, mTLS and a per-RPC allow-list between
+  services; only the edge may act for end users (ADR-0025).
+- **Realm as code** — Keycloak realm with PKCE dashboard client and API audience.
+- **Proof** — RBAC matrix and cross-tenant suites (service, database and HTTP level), failure tests for a Postgres
+  restart, a Keycloak outage and a Redis outage, EXPLAIN plans for every list query, kind e2e with traces across both
+  services, and a k6 smoke test (200 rps, p99 < 300 ms).
+
+## Platform (M01)
 
 - **`pkg/`** — shared infrastructure for every Go service: typed env config with production rails, slog JSON logging
   with secret redaction (stdout + OTLP), OpenTelemetry bootstrap (traces, metrics pull + push, logs), HTTP and gRPC
@@ -32,6 +49,9 @@ make bootstrap                 # pinned toolchain + git hooks
 make verify                    # lint, unit + race, integration (needs Docker)
 make up PROFILE=core,obs       # local dependencies (secrets generated into .env)
 make cluster deploy e2e        # kind + conformance chart + helm test + telemetry e2e
+make kind-platform kind-deps   # cert-manager + internal CA; Postgres, Redis, Keycloak in kind
+make deploy-services           # control-plane + api-gateway (images, migrations, helm tests)
+make e2e-services load-smoke   # API/trace/metrics e2e and the k6 smoke test (gateway on 127.0.0.1:28080)
 ```
 
 
