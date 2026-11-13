@@ -42,10 +42,10 @@ type idp struct {
 	kid  string
 }
 
-func newIDP(t *testing.T) *idp {
-	t.Helper()
+func newIDP(tb testing.TB) *idp {
+	tb.Helper()
 	k, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
+	require.NoError(tb, err)
 	p := &idp{rsa: k, kid: "rsa-1"}
 	p.keys = []jose.JSONWebKey{{Key: &k.PublicKey, KeyID: p.kid, Algorithm: string(jose.RS256), Use: "sig"}}
 	p.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -58,7 +58,7 @@ func newIDP(t *testing.T) *idp {
 		}
 		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: p.keys})
 	}))
-	t.Cleanup(p.srv.Close)
+	tb.Cleanup(p.srv.Close)
 	return p
 }
 
@@ -84,21 +84,21 @@ func validClaims() claims {
 		Type: "Bearer", AZP: "infrapilot-dashboard", Email: "alice@example.com", EmailVerified: true, Name: "Alice"}
 }
 
-func sign(t *testing.T, alg jose.SignatureAlgorithm, key any, kid string, c claims) string {
-	t.Helper()
+func sign(tb testing.TB, alg jose.SignatureAlgorithm, key any, kid string, c claims) string {
+	tb.Helper()
 	s, err := jose.NewSigner(jose.SigningKey{Algorithm: alg, Key: key}, (&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", kid))
-	require.NoError(t, err)
+	require.NoError(tb, err)
 	tok, err := jwt.Signed(s).Claims(c).Serialize()
-	require.NoError(t, err)
+	require.NoError(tb, err)
 	return tok
 }
 
-func verifier(t *testing.T, p *idp, gap time.Duration) (*auth.Verifier, *auth.KeySet) {
-	t.Helper()
+func verifier(tb testing.TB, p *idp, gap time.Duration) (*auth.Verifier, *auth.KeySet) {
+	tb.Helper()
 	ks, err := auth.NewKeySet(auth.KeySetConfig{URL: p.srv.URL, MinRefreshGap: gap}, p.srv.Client(), slog.New(slog.DiscardHandler), noop.NewMeterProvider().Meter("t"))
-	require.NoError(t, err)
+	require.NoError(tb, err)
 	v, err := auth.NewVerifier(auth.VerifierConfig{Issuer: issuer, Audience: audience, AuthorizedParties: []string{"infrapilot-dashboard"}}, ks)
-	require.NoError(t, err)
+	require.NoError(tb, err)
 	return v, ks
 }
 
