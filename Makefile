@@ -81,7 +81,9 @@ lint-docker:
 
 vuln: ## govulncheck over all Go modules and the pinned tools (`tool` pattern)
 	@for m in $(GO_MODULES); do echo "govulncheck: $$m"; (cd $(ROOT)/$$m && $(GOTOOL) govulncheck ./...) || exit 1; done
-	@echo "govulncheck: tools"; cd $(ROOT)/tools && $(GOTOOL) govulncheck tool
+	@# One tool at a time: a single scan of every tool peaks near 6 GB and is OOM-killed on CI runners
+	@# (measured: largest single tool, sqlc, peaks at 3.6 GB).
+	@cd $(ROOT)/tools && for p in $$($(GO) list tool); do echo "govulncheck: $$p"; $(GOTOOL) govulncheck "$$p" || exit 1; done
 
 test: ## Unit tests with the race detector
 	@for m in $(GO_MODULES); do echo "go test: $$m"; (cd $(ROOT)/$$m && $(GO) test -race -count=1 -timeout 10m ./...) || exit 1; done

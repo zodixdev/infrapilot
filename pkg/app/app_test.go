@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -247,8 +248,14 @@ func TestApp_CloserRunsInReverseOrder(t *testing.T) {
 	cancel()
 	err := <-done
 	require.ErrorContains(t, err, "shutdown pool: already closed")
-	events := rec.list()
-	require.Equal(t, []string{"stop:http", "close:pool", "close:telemetry"}, events[len(events)-3:])
+	// Only stop/close events: a component goroutine may record its own start late on a busy machine.
+	var stops []string
+	for _, e := range rec.list() {
+		if strings.HasPrefix(e, "stop:") || strings.HasPrefix(e, "close:") {
+			stops = append(stops, e)
+		}
+	}
+	require.Equal(t, []string{"stop:http", "close:pool", "close:telemetry"}, stops)
 }
 
 // TestApp_SIGTERM is not parallel: it signals the test process.

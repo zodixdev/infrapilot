@@ -1,6 +1,6 @@
 # InfraPilot CI — mirrors `make verify` plus image/cluster checks. Every job is a thin wrapper around a
 # Make target so local runs (`make verify`, `act -j lint`) and CI stay identical.
-# Actions are pinned to commit SHAs (tag in the comment); Dependabot proposes updates.
+# Actions are pinned to commit SHAs (tag in the comment); maintainers re-pin them when updating (ADR-0021).
 name: ci
 
 on:

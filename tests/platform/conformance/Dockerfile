@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # Build context: repository root (go.work). Multi-stage, static binary, distroless non-root.
-# Base images are pinned by digest (tag kept for readability); Dependabot proposes updates.
+# Base images are pinned by digest (tag kept for readability); maintainers re-resolve digests when updating.
 FROM golang:1.27.4-bookworm@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea AS build
 WORKDIR /src
 ENV CGO_ENABLED=0 GOFLAGS=-trimpath

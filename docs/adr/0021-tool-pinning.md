@@ -11,7 +11,7 @@ lint results non-reproducible.
 
 ## Options considered
 1. **Go `tool` directives in a dedicated `tools` module (`tools/go.mod`) run via `go tool <name>`, plus a `Brewfile`
-   for non-Go tools** — versions live in a `go.mod` (Dependabot/`go get -u` manage them), builds are cached by the
+   for non-Go tools** — versions live in a `go.mod` (`go get -u` updates them), builds are cached by the
    Go toolchain, no `GOBIN` pollution, no network at run time after the first build.
    Downside: all tools share one module graph, so MVS can pick dependency versions a tool was never tested with.
    Observed in M01: gitleaks failed to compile until `charmbracelet/x/cellbuf` was bumped explicitly.
@@ -31,6 +31,9 @@ Exception: `gitleaks` is additionally installed from the Brewfile because `scrip
 requires it on `PATH`; pre-commit and CI run the pinned `go tool gitleaks`.
 
 ## Consequences
+- Updates are made by the maintainers from the owner's account (no bot branches or pull requests): `go get -u` in
+  the module, re-pin action SHAs with `git ls-remote`, re-resolve image digests with `docker buildx imagetools inspect`,
+  then `make verify vuln`.
 - Good: one `go.mod` to review for tool upgrades; `go tool` works from any directory of the workspace; `make bootstrap`
   is idempotent and offline after the first run.
 - Bad / trade-offs we accept: first build of golangci-lint/buf from source takes a few minutes per machine and per
