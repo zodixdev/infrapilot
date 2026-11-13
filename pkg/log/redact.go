@@ -64,13 +64,53 @@ func Scrub(s string) string {
 	if s == "" {
 		return s
 	}
-	s = scrubURLs(s)
-	s = xmlElement.ReplaceAllString(s, "${1}"+Redacted+"${3}")
-	s = authHeader.ReplaceAllString(s, "${1}"+Redacted)
-	s = cookieLine.ReplaceAllString(s, "${1}"+Redacted)
-	s = authScheme.ReplaceAllString(s, "${1}${2}"+Redacted)
-	s = tokenScheme.ReplaceAllString(s, "${1}${2}"+Redacted)
-	s = keyValue.ReplaceAllStringFunc(s, func(m string) string {
+	// Prefilter (profiled: regex backtracking dominated every log record): each pattern runs only when its
+	// literal trigger occurs, which is rare in ordinary attribute values (routes, ids, user agents).
+	lower := strings.ToLower(s)
+	if strings.Contains(lower, "://") && strings.Contains(lower, "@") {
+		s = scrubURLs(s)
+	}
+	if strings.Contains(lower, "<") {
+		s = xmlElement.ReplaceAllString(s, "${1}"+Redacted+"${3}")
+	}
+	if strings.Contains(lower, "authoriz") {
+		s = authHeader.ReplaceAllString(s, "${1}"+Redacted)
+	}
+	if strings.Contains(lower, "cookie") {
+		s = cookieLine.ReplaceAllString(s, "${1}"+Redacted)
+	}
+	if strings.Contains(lower, "bearer") || strings.Contains(lower, "basic") || strings.Contains(lower, "digest") {
+		s = authScheme.ReplaceAllString(s, "${1}${2}"+Redacted)
+	}
+	if strings.Contains(lower, "token") {
+		s = tokenScheme.ReplaceAllString(s, "${1}${2}"+Redacted)
+	}
+	if strings.ContainsAny(lower, "=:") && containsAny(lower, keyWords) {
+		s = scrubKeyValues(s)
+	}
+	if strings.Contains(s, "eyJ") {
+		s = jwt.ReplaceAllString(s, Redacted)
+	}
+	if strings.Contains(s, "ipk_") {
+		s = apiKey.ReplaceAllString(s, Redacted)
+	}
+	return s
+}
+
+// keyWords are the literal triggers of keyValue (any match makes the regex worth running).
+var keyWords = []string{"pass", "pwd", "secret", "token", "key", "credential", "jwt", "session", "cookie", "auth"}
+
+func containsAny(s string, words []string) bool {
+	for _, w := range words {
+		if strings.Contains(s, w) {
+			return true
+		}
+	}
+	return false
+}
+
+func scrubKeyValues(s string) string {
+	return keyValue.ReplaceAllStringFunc(s, func(m string) string {
 		sub := keyValue.FindStringSubmatch(m)
 		if strings.Contains(sub[2], Redacted) {
 			return m
@@ -81,9 +121,6 @@ func Scrub(s string) string {
 		}
 		return sub[1] + Redacted
 	})
-	s = jwt.ReplaceAllString(s, Redacted)
-	s = apiKey.ReplaceAllString(s, Redacted)
-	return s
 }
 
 // scrubURLs masks URL userinfo. The candidate runs to the last '@' of the token so passwords containing
