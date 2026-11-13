@@ -12,6 +12,9 @@ import (
 // ErrNoTenant is returned when WithTx is called with the nil UUID.
 var ErrNoTenant = errors.New("postgres: tenant id is required")
 
+// ErrNoUser is returned by WithUserTx for the nil user id.
+var ErrNoUser = errors.New("postgres: user id is required")
+
 // TxOption adjusts transaction characteristics.
 type TxOption func(*pgx.TxOptions)
 
@@ -34,17 +37,31 @@ func (p *Pool) WithTx(ctx context.Context, orgID uuid.UUID, fn func(ctx context.
 	if p.bypassRLS {
 		return ErrBypassRLS
 	}
-	return p.runTx(ctx, orgID.String(), fn, opts)
+	return p.runTx(ctx, orgID.String(), "", fn, opts)
 }
 
-// WithSystemTx runs fn with the tenant context explicitly cleared. Use it for service-internal tables
-// (outbox, processed_messages) and for the pre-tenant lookup tables of ADR-0018. Under the runtime role
+// WithUserTx runs fn in a READ ONLY transaction scoped to a user instead of a tenant: `app.user_id` is set
+// and `app.org_id` cleared, so only the SELECT-only user policies of ADR-0023 can match rows (e.g. "the
+// organizations I belong to"). Writes are impossible: the transaction is read-only and tenant policies'
+// WITH CHECK needs `app.org_id`. Like WithTx it refuses BYPASSRLS pools.
+func (p *Pool) WithUserTx(ctx context.Context, userID uuid.UUID, fn func(ctx context.Context, tx pgx.Tx) error, opts ...TxOption) error {
+	if userID == uuid.Nil {
+		return ErrNoUser
+	}
+	if p.bypassRLS {
+		return ErrBypassRLS
+	}
+	return p.runTx(ctx, "", userID.String(), fn, append(opts, ReadOnly()))
+}
+
+// WithSystemTx runs fn with the tenant and user contexts explicitly cleared. Use it for service-internal
+// tables (outbox, processed_messages) and for the pre-tenant lookup tables of ADR-0018. Under the runtime role
 // tenant tables return no rows, whatever state the pooled connection was left in.
 func (p *Pool) WithSystemTx(ctx context.Context, fn func(ctx context.Context, tx pgx.Tx) error, opts ...TxOption) error {
-	return p.runTx(ctx, "", fn, opts)
+	return p.runTx(ctx, "", "", fn, opts)
 }
 
-func (p *Pool) runTx(ctx context.Context, orgID string, fn func(ctx context.Context, tx pgx.Tx) error, opts []TxOption) (err error) {
+func (p *Pool) runTx(ctx context.Context, orgID, userID string, fn func(ctx context.Context, tx pgx.Tx) error, opts []TxOption) (err error) {
 	txOpts := pgx.TxOptions{IsoLevel: pgx.ReadCommitted}
 	for _, o := range opts {
 		o(&txOpts)
@@ -67,9 +84,9 @@ func (p *Pool) runTx(ctx context.Context, orgID string, fn func(ctx context.Cont
 			err = errors.Join(err, fmt.Errorf("postgres: rollback: %w", rbErr))
 		}
 	}()
-	// Always set the value (empty for system transactions) so a session-level value left on the
-	// connection by anything outside this package can never apply.
-	if _, err := tx.Exec(ctx, "SELECT set_config('app.org_id', $1, true)", orgID); err != nil {
+	// Always set both values (empty when unused) so a session-level value left on the connection by anything
+	// outside this package can never apply. One statement, one round trip.
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.org_id', $1, true), set_config('app.user_id', $2, true)", orgID, userID); err != nil {
 		return fmt.Errorf("postgres: set tenant: %w", err)
 	}
 	if err := fn(ctx, tx); err != nil {

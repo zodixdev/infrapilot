@@ -131,8 +131,60 @@ type GRPC struct {
 	TLSCertFile     string `env:"TLS_CERT_FILE" envDefault:""`
 	TLSKeyFile      string `env:"TLS_KEY_FILE" envDefault:""`
 	TLSClientCAFile string `env:"TLS_CLIENT_CA_FILE" envDefault:""`
+	// InsecurePeerIdentity is the workload identity assumed for plaintext callers by the peer allow-list
+	// (ADR-0025). Local development and tests only; forbidden in staging and prod.
+	InsecurePeerIdentity string `env:"INSECURE_PEER_IDENTITY" envDefault:""`
 	// Disabled turns the gRPC listener off for services that have no internal API.
 	Disabled bool `env:"DISABLED" envDefault:"false"`
+}
+
+// GRPCClient configures a connection to an internal gRPC service (ADR-0025). Services embed it with a
+// prefix per upstream, e.g. `envPrefix:"CONTROLPLANE_"`.
+type GRPCClient struct {
+	// Target in gRPC naming syntax; use dns:///<headless-service>:<port> in Kubernetes so calls are balanced
+	// over all pods.
+	Target string `env:"TARGET"`
+	// ServerName verified against the server certificate; defaults to the target host.
+	ServerName string `env:"SERVER_NAME" envDefault:""`
+	// ServerIdentity, when set, must equal the server certificate's spiffe:// URI SAN.
+	ServerIdentity string `env:"SERVER_IDENTITY" envDefault:""`
+	// TLS material: client certificate (mTLS) and the CA bundle that verifies the server.
+	TLSCertFile string `env:"TLS_CERT_FILE" envDefault:""`
+	TLSKeyFile  string `env:"TLS_KEY_FILE" envDefault:""`
+	TLSCAFile   string `env:"TLS_CA_FILE" envDefault:""`
+	// Insecure uses plaintext (local development and tests only; rejected by ValidateFor in staging and prod).
+	Insecure bool `env:"INSECURE" envDefault:"false"`
+	// Timeout is the deadline applied to calls whose context has none.
+	Timeout time.Duration `env:"TIMEOUT" envDefault:"5s"`
+}
+
+// ValidateFor checks c for the given environment.
+func (c *GRPCClient) ValidateFor(environment Environment) error {
+	var errs []error
+	if strings.TrimSpace(c.Target) == "" {
+		errs = append(errs, errors.New("gRPC client TARGET must not be empty"))
+	}
+	if c.Timeout <= 0 {
+		errs = append(errs, errors.New("gRPC client TIMEOUT must be positive"))
+	}
+	if c.Insecure && (c.TLSCertFile != "" || c.TLSCAFile != "") {
+		errs = append(errs, errors.New("gRPC client INSECURE cannot be combined with TLS files"))
+	}
+	if !c.Insecure && c.TLSCAFile == "" {
+		errs = append(errs, errors.New("gRPC client TLS_CA_FILE is required unless INSECURE=true"))
+	}
+	if (c.TLSCertFile == "") != (c.TLSKeyFile == "") {
+		errs = append(errs, errors.New("gRPC client TLS_CERT_FILE and TLS_KEY_FILE must be set together"))
+	}
+	if environment == EnvProd || environment == EnvStaging {
+		if c.Insecure {
+			errs = append(errs, fmt.Errorf("gRPC client INSECURE is not allowed in %s", environment))
+		}
+		if c.TLSCertFile == "" {
+			errs = append(errs, fmt.Errorf("gRPC client TLS_CERT_FILE is required in %s (mTLS, ADR-0025)", environment))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Shutdown controls graceful termination (AGENTS.md §5).
@@ -252,6 +304,12 @@ func (c *Common) productionRails() []error {
 	}
 	if !c.GRPC.Disabled && c.GRPC.TLSCertFile == "" {
 		errs = append(errs, fmt.Errorf("GRPC_TLS_CERT_FILE is required in %s (security.md: internal traffic is TLS)", envName))
+	}
+	if !c.GRPC.Disabled && c.GRPC.TLSClientCAFile == "" {
+		errs = append(errs, fmt.Errorf("GRPC_TLS_CLIENT_CA_FILE is required in %s (mTLS peer identities, ADR-0025)", envName))
+	}
+	if c.GRPC.InsecurePeerIdentity != "" {
+		errs = append(errs, fmt.Errorf("GRPC_INSECURE_PEER_IDENTITY is not allowed in %s", envName))
 	}
 	if c.Admin.Pprof && !c.Admin.PprofProdAck {
 		errs = append(errs, fmt.Errorf("ADMIN_PPROF in %s also requires ADMIN_PPROF_PROD_ACK=true (heap profiles may contain secrets)", envName))

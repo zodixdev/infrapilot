@@ -54,6 +54,7 @@ type Server struct {
 	mp     metric.MeterProvider
 	unary  []grpc.UnaryServerInterceptor
 	stream []grpc.StreamServerInterceptor
+	peers  *PeerPolicy
 }
 
 // Option configures the server.
@@ -116,6 +117,14 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*Server, error) {
 	std, stdStream, err := standardInterceptors(s.log, s.mp, cfg.DefaultTimeout) //nolint:contextcheck // stream interceptors take ctx from ss.Context()
 	if err != nil {
 		return nil, err
+	}
+	// The peer allow-list runs after recovery/metrics (so denials are counted) and before service interceptors.
+	if s.peers != nil {
+		if vErr := s.peers.validate(); vErr != nil {
+			return nil, vErr
+		}
+		pu, ps := s.peers.interceptors(s.log)
+		std, stdStream = append(std, pu), append(stdStream, ps)
 	}
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.Addr)
 	if err != nil {

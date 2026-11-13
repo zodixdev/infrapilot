@@ -112,6 +112,8 @@ func TestCommon_Validate(t *testing.T) {
 		{"half tls", map[string]string{"GRPC_TLS_CERT_FILE": "/tls/tls.crt"}, "set together"},
 		{"zero body limit", map[string]string{"HTTP_MAX_BODY_BYTES": "0"}, "HTTP_MAX_BODY_BYTES"},
 		{"prod without grpc tls", map[string]string{"ENVIRONMENT": "prod"}, "GRPC_TLS_CERT_FILE is required in prod"},
+		{"prod without mtls client ca", map[string]string{"ENVIRONMENT": "prod", "GRPC_TLS_CERT_FILE": "/tls/tls.crt", "GRPC_TLS_KEY_FILE": "/tls/tls.key"}, "GRPC_TLS_CLIENT_CA_FILE is required in prod"},
+		{"staging insecure peer identity", map[string]string{"ENVIRONMENT": "staging", "GRPC_INSECURE_PEER_IDENTITY": "spiffe://infrapilot.local/ns/x/sa/y"}, "GRPC_INSECURE_PEER_IDENTITY"},
 		{"staging pprof without ack", map[string]string{"ENVIRONMENT": "staging", "ADMIN_PPROF": "true"}, "ADMIN_PPROF_PROD_ACK"},
 		{"staging text logs", map[string]string{"ENVIRONMENT": "staging", "LOG_FORMAT": "text"}, "LOG_FORMAT must be json in staging"},
 		{"prod debug logs", map[string]string{"ENVIRONMENT": "prod", "LOG_LEVEL": "debug"}, "LOG_LEVEL=debug"},
@@ -146,6 +148,7 @@ func TestCommon_ValidProductionConfig(t *testing.T) {
 	e := minimalEnv()
 	for k, v := range map[string]string{
 		"ENVIRONMENT": "prod", "GRPC_TLS_CERT_FILE": "/tls/tls.crt", "GRPC_TLS_KEY_FILE": "/tls/tls.key",
+		"GRPC_TLS_CLIENT_CA_FILE":     "/tls/ca.crt",
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "https://collector.observability:4317", "TELEMETRY_LOGS_PUSH": "true",
 		"ADMIN_PPROF": "true", "ADMIN_PPROF_PROD_ACK": "true",
 	} {
@@ -161,4 +164,37 @@ func TestCommon_ValidProductionConfig(t *testing.T) {
 	e["ENVIRONMENT"], e["GRPC_DISABLED"] = "prod", "true"
 	_, err = config.Load[serviceConfig](config.WithEnvironment(e))
 	require.NoError(t, err)
+}
+
+func TestGRPCClient_ValidateFor(t *testing.T) {
+	t.Parallel()
+	valid := config.GRPCClient{Target: "dns:///control-plane:9090", TLSCAFile: "/tls/ca.crt",
+		TLSCertFile: "/tls/tls.crt", TLSKeyFile: "/tls/tls.key", Timeout: time.Second}
+	require.NoError(t, valid.ValidateFor(config.EnvProd))
+	tests := []struct {
+		name string
+		mut  func(*config.GRPCClient)
+		env  config.Environment
+		want string
+	}{
+		{"empty target", func(c *config.GRPCClient) { c.Target = "" }, config.EnvDev, "TARGET"},
+		{"zero timeout", func(c *config.GRPCClient) { c.Timeout = 0 }, config.EnvDev, "TIMEOUT"},
+		{"tls without ca", func(c *config.GRPCClient) { c.TLSCAFile = "" }, config.EnvDev, "TLS_CA_FILE"},
+		{"half client cert", func(c *config.GRPCClient) { c.TLSKeyFile = "" }, config.EnvDev, "set together"},
+		{"insecure mixed with tls", func(c *config.GRPCClient) { c.Insecure = true }, config.EnvDev, "cannot be combined"},
+		{"insecure in prod", func(c *config.GRPCClient) {
+			*c = config.GRPCClient{Target: "x:1", Timeout: time.Second, Insecure: true}
+		}, config.EnvProd, "INSECURE is not allowed in prod"},
+		{"no client cert in staging", func(c *config.GRPCClient) { c.TLSCertFile, c.TLSKeyFile = "", "" }, config.EnvStaging, "TLS_CERT_FILE is required in staging"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := valid
+			tt.mut(&c)
+			require.ErrorContains(t, c.ValidateFor(tt.env), tt.want)
+		})
+	}
+	insecureDev := config.GRPCClient{Target: "localhost:9090", Timeout: time.Second, Insecure: true}
+	require.NoError(t, insecureDev.ValidateFor(config.EnvDev))
 }
