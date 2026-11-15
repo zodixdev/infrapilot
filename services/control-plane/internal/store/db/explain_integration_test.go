@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 
+	"github.com/zodixdev/infrapilot/pkg/testutil/pgtest"
 	"github.com/zodixdev/infrapilot/services/control-plane/internal/testdb"
 )
 
@@ -102,6 +103,7 @@ func TestExplain_KeyQueries(t *testing.T) {
 	for _, p := range plans {
 		t.Run(p.name, func(t *testing.T) {
 			var lines []string
+			role := pgtest.AppRole
 			run := func(ctx context.Context, tx pgx.Tx) error {
 				rows, err := tx.Query(ctx, "EXPLAIN (ANALYZE, BUFFERS) "+p.sql, p.args...)
 				if err != nil {
@@ -118,6 +120,7 @@ func TestExplain_KeyQueries(t *testing.T) {
 			case "tenant":
 				require.NoError(t, d.App.WithTx(ctx, tenantOrg, run))
 			case "batch":
+				role = pgtest.BatchRole
 				rollback := errors.New("rollback")
 				err := d.Batch.WithSystemTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 					if err := run(ctx, tx); err != nil {
@@ -136,7 +139,7 @@ func TestExplain_KeyQueries(t *testing.T) {
 			require.Contains(t, text, "Index", "plan for %s:\n%s", p.name, text)
 			if outDir != "" {
 				require.NoError(t, os.MkdirAll(outDir, 0o750))
-				doc := "-- " + p.name + " (" + p.tx + " transaction, role " + "svc_app" + ")\n" + strings.TrimSpace(p.sql) + "\n\n" + text + "\n"
+				doc := "-- " + p.name + " (" + p.tx + " transaction, role " + role + ")\n" + strings.TrimSpace(p.sql) + "\n\n" + text + "\n"
 				require.NoError(t, os.WriteFile(filepath.Join(outDir, p.name+".txt"), []byte(doc), 0o600))
 			}
 		})

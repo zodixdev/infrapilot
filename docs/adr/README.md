@@ -33,5 +33,6 @@ and list it in the milestone report so the owner can review it later.
 | [0025](0025-service-identity.md) | mTLS SPIFFE-style identities, per-RPC peer allow-list, principal accepted only from the edge (refines 0009) |
 | [0026](0026-gateway-edge.md) | Gateway JWKS cache, API-key/permission caches, GCRA rate limiting failing open |
 | [0027](0027-control-plane-retention.md) | Soft delete + purge CronJob under the batch role; retention per table |
+| [0028](0028-idempotency-fingerprint.md) | Stable idempotency fingerprints from control-plane service inputs (refines 0024) |
 
 Template: [0000-template.md](0000-template.md)

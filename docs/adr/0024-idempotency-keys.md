@@ -22,7 +22,8 @@ the original result.
 Option 2.
 - Table `idempotency_keys(organization_id, principal_id, key, operation, request_hash, resource_id, created_at)`,
   unique on `(organization_id, principal_id, key)`, tenant table with RLS, retention 24 h (ADR-0027).
-- `request_hash` = SHA-256 over the operation name and the canonical protobuf encoding of the request.
+- `request_hash` = SHA-256 over the operation name and the request representation. ADR-0028 supersedes
+  the original Protobuf encoding clause for control-plane and defines the persisted format.
 - Concurrent duplicates: each creating transaction first claims a transaction-scoped advisory lock on
   (organization, principal, key) with `pg_try_advisory_xact_lock`, then looks the record up. A duplicate that arrives
   while the original is still running gets 409 `conflict` ("still in progress", the convention of Stripe-style
