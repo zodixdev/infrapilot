@@ -43,9 +43,12 @@ func upstreamError(logger *slog.Logger) func(w http.ResponseWriter, r *http.Requ
 	return func(w http.ResponseWriter, r *http.Request, err error) {
 		st, ok := status.FromError(err)
 		if !ok {
-			logger.ErrorContext(r.Context(), "handler error", slog.Any("error", err))
-			problem(w, r, http.StatusInternalServerError, codeInternal, "internal error")
-			return
+			st = status.FromContextError(err)
+			if st.Code() == codes.Unknown {
+				logger.ErrorContext(r.Context(), "handler error", slog.Any("error", err))
+				problem(w, r, http.StatusInternalServerError, codeInternal, "internal error")
+				return
+			}
 		}
 		switch st.Code() {
 		case codes.InvalidArgument:

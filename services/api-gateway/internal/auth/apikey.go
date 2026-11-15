@@ -42,17 +42,18 @@ type KeyResolver struct {
 	PositiveTTL time.Duration
 	NegativeTTL time.Duration
 	now         func() time.Time
+	timeout     time.Duration
 	lookups     metric.Int64Counter
 	sf          singleflight.Group
 }
 
 // NewKeyResolver returns a resolver with 30 s positive and 5 s negative caching.
-func NewKeyResolver(cache Cache, client cpv1.AuthorizationServiceClient, meter metric.Meter) (*KeyResolver, error) {
+func NewKeyResolver(cache Cache, client cpv1.AuthorizationServiceClient, meter metric.Meter, timeout time.Duration) (*KeyResolver, error) {
 	c, err := meter.Int64Counter("gateway_cache_requests_total", metric.WithDescription("Edge cache lookups by cache and result"))
 	if err != nil {
 		return nil, fmt.Errorf("auth: %w", err)
 	}
-	return &KeyResolver{cache: cache, client: client, PositiveTTL: 30 * time.Second, NegativeTTL: 5 * time.Second, now: time.Now, lookups: c}, nil
+	return &KeyResolver{cache: cache, client: client, PositiveTTL: 30 * time.Second, NegativeTTL: 5 * time.Second, now: time.Now, timeout: timeout, lookups: c}, nil
 }
 
 type cachedKey struct {
@@ -97,9 +98,9 @@ func (r *KeyResolver) Resolve(ctx context.Context, raw string) (*principal.Princ
 		}
 		r.count(ctx, "corrupt")
 	}
-	// Concurrent misses for the same key share one control-plane call; each waiter honors its own cancellation.
+	// The lookup retains request metadata and uses its own bounded lifetime. Each caller waits on its own context.
 	ch := r.sf.DoChan(cacheKey, func() (any, error) {
-		dctx, cancel := principal.Detach(ctx)
+		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.timeout)
 		defer cancel()
 		// A caller that missed the cache just before an earlier shared call finished starts a new one: the answer is
 		// cached by then.
@@ -113,14 +114,6 @@ func (r *KeyResolver) Resolve(ctx context.Context, raw string) (*principal.Princ
 	})
 	select {
 	case res := <-ch:
-		if res.Err != nil && errors.Is(res.Err, context.DeadlineExceeded) && ctx.Err() == nil {
-			// The shared call ran under another waiter's (shorter) deadline; this request still has time left.
-			c, err := r.lookup(ctx, cacheKey, sum[:])
-			if err != nil {
-				return nil, err
-			}
-			return r.toPrincipal(c)
-		}
 		if res.Err != nil {
 			return nil, res.Err
 		}

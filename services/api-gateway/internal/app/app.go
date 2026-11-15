@@ -111,11 +111,11 @@ func Serve(ctx context.Context, cfg *Config, logCfg log.Config, logger *slog.Log
 		return err
 	}
 	authzClient := cpv1.NewAuthorizationServiceClient(cpConn)
-	keyResolver, err := auth.NewKeyResolver(signed, authzClient, meter)
+	keyResolver, err := auth.NewKeyResolver(signed, authzClient, meter, cfg.ControlPlane.Timeout)
 	if err != nil {
 		return err
 	}
-	authorizer, err := authz.New(signed, authzClient, meter)
+	authorizer, err := authz.New(signed, authzClient, meter, cfg.UpstreamTimeout)
 	if err != nil {
 		return err
 	}

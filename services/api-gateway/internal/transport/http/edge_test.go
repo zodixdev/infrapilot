@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -142,6 +143,8 @@ func TestUpstreamErrorMapping(t *testing.T) {
 		{status.Error(codes.ResourceExhausted, "x"), 429, codeRateLimited},
 		{status.Error(codes.Unavailable, "x"), 503, codeUnavailable},
 		{status.Error(codes.DeadlineExceeded, "x"), 503, codeUnavailable},
+		{context.DeadlineExceeded, 503, codeUnavailable},
+		{context.Canceled, 503, codeUnavailable},
 		{status.Error(codes.Internal, "secret detail"), 500, codeInternal},
 		{errors.New("plain"), 500, codeInternal},
 	}

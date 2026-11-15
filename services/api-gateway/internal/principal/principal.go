@@ -72,17 +72,6 @@ func WithIdempotencyKey(ctx context.Context, key string) context.Context {
 	return context.WithValue(ctx, idemKey{}, key)
 }
 
-// Detach returns a context that is not cancelled with ctx but keeps its values and its deadline: work shared by
-// several waiters (singleflight) must not fail because the first waiter went away, yet stays bounded by the
-// request deadline.
-func Detach(ctx context.Context) (context.Context, context.CancelFunc) {
-	d := context.WithoutCancel(ctx)
-	if dl, ok := ctx.Deadline(); ok {
-		return context.WithDeadline(d, dl)
-	}
-	return context.WithCancel(d)
-}
-
 // Outgoing returns ctx with the request's principal, request id and Idempotency-Key as gRPC metadata.
 func Outgoing(ctx context.Context) (context.Context, error) {
 	kv := []string{grpcmeta.RequestID, httpserver.RequestIDFromContext(ctx)}

@@ -35,7 +35,8 @@ local token buckets per replica (limits multiply with replicas).
 - Caches never store raw keys or tokens; Redis keys use hashes (length-prefixed parts). Cached values are
   authenticated with HMAC-SHA256 over (key, value) using a gateway-only secret (`CACHE_SIGNING_KEY`), so write
   access to Redis is not enough to plant a principal or a decision; a failed check counts as a miss. Redis requires
-  authentication and TLS in staging and prod. Concurrent misses for the same key share one upstream call.
+  authentication and TLS in staging and prod. Concurrent misses for the same key share one bounded upstream
+  lookup with its own deadline. Each request waits only until its own context ends.
 - Tokens are additionally bound to the API's OAuth clients (`azp` allow-list) and to a maximum lifetime (`exp - iat`
   ≤ 1 h).
 - **Failed authentication budget:** before resolving any credential, a per-client-IP GCRA bucket of failed

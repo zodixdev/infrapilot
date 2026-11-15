@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -63,10 +64,14 @@ type fakeAuthz struct {
 	release chan struct{}
 }
 
-func (f *fakeAuthz) AuthenticateApiKey(context.Context, *cpv1.AuthenticateApiKeyRequest, ...grpc.CallOption) (*cpv1.AuthenticateApiKeyResponse, error) { //nolint:revive // name fixed by the generated client interface
+func (f *fakeAuthz) AuthenticateApiKey(ctx context.Context, _ *cpv1.AuthenticateApiKeyRequest, _ ...grpc.CallOption) (*cpv1.AuthenticateApiKeyResponse, error) { //nolint:revive // name fixed by the generated client interface
 	f.calls.Add(1)
 	if f.release != nil {
-		<-f.release
+		select {
+		case <-f.release:
+		case <-ctx.Done():
+			return nil, status.FromContextError(ctx.Err()).Err()
+		}
 	}
 	return f.resp, f.err
 }
@@ -81,7 +86,7 @@ func newKey(t *testing.T) string {
 
 func resolver(t *testing.T, c auth.Cache, f *fakeAuthz) *auth.KeyResolver {
 	t.Helper()
-	r, err := auth.NewKeyResolver(c, f, noop.NewMeterProvider().Meter("t"))
+	r, err := auth.NewKeyResolver(c, f, noop.NewMeterProvider().Meter("t"), 5*time.Second)
 	require.NoError(t, err)
 	return r
 }
@@ -185,5 +190,45 @@ func TestKeyResolver(t *testing.T) {
 		close(f.release)
 		wg.Wait()
 		require.EqualValues(t, 1, f.calls.Load())
+	})
+
+	t.Run("the first caller's deadline does not cancel the shared RPC", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			f := &fakeAuthz{resp: okResp(), release: make(chan struct{})}
+			r := resolver(t, newMemCache(), f)
+			k := newKey(t)
+			short, cancelShort := context.WithTimeout(t.Context(), time.Second)
+			defer cancelShort()
+			shortErr := make(chan error, 1)
+			go func() {
+				_, err := r.Resolve(short, k)
+				shortErr <- err
+			}()
+			synctest.Wait()
+			require.EqualValues(t, 1, f.calls.Load())
+
+			long, cancelLong := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancelLong()
+			type result struct {
+				key *principal.Principal
+				err error
+			}
+			longResult := make(chan result, 1)
+			go func() {
+				p, err := r.Resolve(long, k)
+				longResult <- result{key: p, err: err}
+			}()
+			synctest.Wait()
+
+			require.ErrorIs(t, <-shortErr, context.DeadlineExceeded)
+			synctest.Wait() // Let any cancellation of the shared RPC reach the second waiter before releasing it.
+			close(f.release)
+			got := <-longResult
+			require.NoError(t, got.err)
+			require.NotNil(t, got.key)
+			require.Equal(t, "k1", got.key.KeyID)
+			require.EqualValues(t, 1, f.calls.Load(), "both callers used the same RPC")
+		})
 	})
 }

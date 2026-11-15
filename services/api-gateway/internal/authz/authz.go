@@ -35,17 +35,18 @@ type Authorizer struct {
 	client   cpv1.AuthorizationServiceClient
 	AllowTTL time.Duration
 	DenyTTL  time.Duration
+	timeout  time.Duration
 	lookups  metric.Int64Counter
 	sf       singleflight.Group
 }
 
 // New returns an authorizer.
-func New(cache auth.Cache, client cpv1.AuthorizationServiceClient, meter metric.Meter) (*Authorizer, error) {
+func New(cache auth.Cache, client cpv1.AuthorizationServiceClient, meter metric.Meter, timeout time.Duration) (*Authorizer, error) {
 	c, err := meter.Int64Counter("gateway_cache_requests_total", metric.WithDescription("Edge cache lookups by cache and result"))
 	if err != nil {
 		return nil, fmt.Errorf("authz: %w", err)
 	}
-	return &Authorizer{cache: cache, client: client, AllowTTL: 30 * time.Second, DenyTTL: 5 * time.Second, lookups: c}, nil
+	return &Authorizer{cache: cache, client: client, AllowTTL: 30 * time.Second, DenyTTL: 5 * time.Second, timeout: timeout, lookups: c}, nil
 }
 
 // cacheKey hashes the length-prefixed parts, so no combination of values can collide with another.
@@ -78,10 +79,10 @@ func (a *Authorizer) Check(ctx context.Context, p *principal.Principal, org stri
 	default:
 		a.count(ctx, "miss")
 	}
-	// Concurrent misses for the same decision share one call; each waiter honors its own cancellation. The shared
-	// call keeps the first caller's metadata (principal, request id): identical principal by construction of key.
+	// The lookup keeps the first caller's metadata (the principal is part of the key) and has its own timeout.
+	// Each caller waits on its own context.
 	ch := a.sf.DoChan(key, func() (any, error) {
-		dctx, cancel := principal.Detach(ctx)
+		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), a.timeout)
 		defer cancel()
 		// A caller that missed the cache just before an earlier shared call finished starts a new one: the decision
 		// is cached by then.
@@ -92,10 +93,6 @@ func (a *Authorizer) Check(ctx context.Context, p *principal.Principal, org stri
 	})
 	select {
 	case res := <-ch:
-		if res.Err != nil && errors.Is(res.Err, context.DeadlineExceeded) && ctx.Err() == nil {
-			// The shared call ran under another waiter's (shorter) deadline; this request still has time left.
-			return a.decide(ctx, key, org, perm, project)
-		}
 		if res.Err != nil {
 			return Decision{}, res.Err
 		}

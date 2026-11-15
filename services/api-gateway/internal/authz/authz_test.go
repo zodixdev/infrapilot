@@ -6,12 +6,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/metric/noop"
 	"go.uber.org/goleak"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/status"
 
 	cpv1 "github.com/zodixdev/infrapilot/gen/go/infrapilot/controlplane/v1"
 	"github.com/zodixdev/infrapilot/services/api-gateway/internal/authz"
@@ -55,10 +57,14 @@ type fakeClient struct {
 	release chan struct{}
 }
 
-func (f *fakeClient) CheckPermission(context.Context, *cpv1.CheckPermissionRequest, ...grpc.CallOption) (*cpv1.CheckPermissionResponse, error) {
+func (f *fakeClient) CheckPermission(ctx context.Context, _ *cpv1.CheckPermissionRequest, _ ...grpc.CallOption) (*cpv1.CheckPermissionResponse, error) {
 	f.calls.Add(1)
 	if f.release != nil {
-		<-f.release
+		select {
+		case <-f.release:
+		case <-ctx.Done():
+			return nil, status.FromContextError(ctx.Err()).Err()
+		}
 	}
 	return &cpv1.CheckPermissionResponse{Allowed: f.allowed, Role: f.role}, nil
 }
@@ -66,7 +72,7 @@ func (f *fakeClient) CheckPermission(context.Context, *cpv1.CheckPermissionReque
 func setup(t *testing.T, f *fakeClient) (*authz.Authorizer, *memCache) {
 	t.Helper()
 	c := &memCache{vals: map[string][]byte{}, ttls: map[string]time.Duration{}}
-	a, err := authz.New(c, f, noop.NewMeterProvider().Meter("t"))
+	a, err := authz.New(c, f, noop.NewMeterProvider().Meter("t"), 5*time.Second)
 	require.NoError(t, err)
 	return a, c
 }
@@ -142,5 +148,43 @@ func TestCheck(t *testing.T) {
 		close(f.release)
 		wg.Wait()
 		require.EqualValues(t, 1, f.calls.Load())
+	})
+
+	t.Run("the first caller's deadline does not cancel the shared RPC", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			f := &fakeClient{allowed: true, role: cpv1.Role_ROLE_OWNER, release: make(chan struct{})}
+			a, _ := setup(t, f)
+			short, cancelShort := context.WithTimeout(t.Context(), time.Second)
+			defer cancelShort()
+			shortErr := make(chan error, 1)
+			go func() {
+				_, err := a.Check(short, alice, org, cpv1.Permission_PERMISSION_ORG_READ, "")
+				shortErr <- err
+			}()
+			synctest.Wait()
+			require.EqualValues(t, 1, f.calls.Load())
+
+			long, cancelLong := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancelLong()
+			type result struct {
+				decision authz.Decision
+				err      error
+			}
+			longResult := make(chan result, 1)
+			go func() {
+				d, err := a.Check(long, alice, org, cpv1.Permission_PERMISSION_ORG_READ, "")
+				longResult <- result{decision: d, err: err}
+			}()
+			synctest.Wait()
+
+			require.ErrorIs(t, <-shortErr, context.DeadlineExceeded)
+			synctest.Wait() // Let any cancellation of the shared RPC reach the second waiter before releasing it.
+			close(f.release)
+			got := <-longResult
+			require.NoError(t, got.err)
+			require.Equal(t, authz.Decision{Allowed: true, Member: true}, got.decision)
+			require.EqualValues(t, 1, f.calls.Load(), "both callers used the same RPC")
+		})
 	})
 }
