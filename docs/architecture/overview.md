@@ -88,15 +88,16 @@ flowchart TB
 
 ## 4. Communication rules
 
-- Public: REST + OpenAPI 3.1 at `/v1/...`. Internal sync: gRPC with deadlines. Agents: bidirectional gRPC stream.
+- Public: REST + OpenAPI 3.0.3 at `/v1/...` (ADR-0020). Internal sync: gRPC with deadlines. Agents: bidirectional gRPC stream.
 - Kafka = facts (events), RabbitMQ = commands (tasks). See ADR-0004.
 - Events are Protobuf, wrapped in `infrapilot.events.v1.Envelope`. Breaking changes blocked by `buf breaking`.
 - Internal traffic encrypted with TLS (cert-manager); Kubernetes NetworkPolicies default-deny.
 
 ## 5. Platform self-observability
 
-InfraPilot's **own** telemetry is separate from customer data:
-OTel SDK → OTel Collector → Prometheus (metrics), Tempo (traces), Loki (logs) → Grafana.
+InfraPilot's **own** telemetry is separate from customer data. Prometheus pulls service metrics from
+`/metrics`. Traces and optional logs and metrics go through the OTel Collector to Tempo, Loki and
+Prometheus. Grafana reads from those stores (ADR-0019).
 Customer telemetry lives only in TimescaleDB/ClickHouse.
 
 ## 6. Initial SLOs (validated in M10)

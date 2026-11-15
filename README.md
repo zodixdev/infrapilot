@@ -5,7 +5,7 @@ Multi-tenant infrastructure monitoring, incident management and automation platf
 **Stack:** Go · Python/FastAPI · gRPC/Protobuf · Kafka · RabbitMQ · PostgreSQL · TimescaleDB · ClickHouse ·
 Redis · MinIO/S3 · Keycloak · Kubernetes/Helm · OpenTelemetry/Prometheus/Grafana/Tempo/Loki · Next.js
 
-> Status: **M01 — engineering platform** complete. Services start in M02. See [roadmap](docs/roadmap.md).
+> Status: **M02 — identity, control plane, gateway** complete. Next: M03 (checks and telemetry pipeline). See [roadmap](docs/roadmap.md).
 
 ## Identity, control plane and gateway (M02)
 
