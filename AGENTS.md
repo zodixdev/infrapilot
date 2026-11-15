@@ -91,6 +91,9 @@ Grafana dashboard + Prometheus alerts in `observability/` · runbook `docs/runbo
 - Commit locally during a milestone. **Publish to GitHub only once per milestone, after it is closed**, and only with
   `scripts/publish.sh MXX` (it checks branch, remote, clean tree, local-only files, roadmap status, report,
   gitleaks and `make verify`, then pushes `main` + tag `milestone/MXX`). Raw `git push` is blocked.
+- With explicit owner approval, `scripts/publish.sh MXX --repair` may publish one repair for the current
+  published milestone. It applies the same checks and atomically fast-forwards `main` and creates
+  `milestone/MXX-repair.1`. The original tag remains on the initial milestone commit.
 - Never force-push, rewrite published history, add/change remotes, open PRs, create releases or change repo settings.
   The owner configured `origin` (e.g. `git@github-new:zodixdev/<repo>.git`); use it as is.
 - If `publish.sh` fails, fix the cause; never bypass a check.
