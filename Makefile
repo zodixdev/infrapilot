@@ -152,7 +152,7 @@ undeploy: ## Remove the conformance release and its namespace (including the kep
 
 e2e: ## Verify the deployed conformance service reports traces/metrics to the obs profile (needs make up PROFILE=obs)
 	@cd $(ROOT)/tests && KUBE_CONTEXT=$(KUBE_CONTEXT) HELM_NAMESPACE=$(HELM_NAMESPACE) HELM_RELEASE=$(HELM_RELEASE) \
-	    $(GO) test -count=1 -timeout 10m -tags e2e -run 'E2E' ./e2e/...
+	    $(GO) test -count=1 -timeout 10m -tags e2e -run '^TestE2E_ConformanceRelease$$' ./e2e/...
 
 # ---------------------------------------------------------------- services on kind (M02+)
 CERT_MANAGER_VERSION ?= v1.19.1
