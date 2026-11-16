@@ -62,7 +62,8 @@ flowchart TB
     RQ --> NS & AI & WF
     WF -->|signed commands| AM
     AI --> QS
-    QS --> TS & CH
+    QS -->|Timescale reads via gRPC| SP
+    QS -->|logs and traces| CH
     CP & IE & WF & NS & AM & CR --> PG
     GW & IG --> RD
     AI & WF --> S3
@@ -77,7 +78,7 @@ flowchart TB
 | check-runner | Go | Check definitions, distributed scheduling (lease-based), HTTP/TCP/TLS/DNS/ICMP probes with SSRF guard | `checks` DB | gRPC | produces `check.results.v1` |
 | telemetry-ingestion | Go | OTLP gRPC/HTTP receiver, auth (API key / agent cert), validation, per-tenant quotas, backpressure | — (Redis quotas) | OTLP | produces `telemetry.{metrics,logs,spans}.v1` |
 | stream-processor | Go | Consume telemetry & results, batch-write to TimescaleDB/ClickHouse, compute rollups, evaluate threshold rules, emit signals | writes TS + CH | — | consumes telemetry/results, produces `signals.v1` |
-| query-service | Go | Read APIs over metrics/logs/traces (tenant-scoped, bounded queries, pagination) | read-only on TS + CH | gRPC | — |
+| query-service | Go | Read APIs over metrics/logs/traces (tenant-scoped, bounded queries, pagination) | — | gRPC, Timescale reads through stream-processor | — |
 | incident-engine | Go | Alert rules, signal correlation, dedup, incident state machine, timeline | `incidents` DB | gRPC | consumes signals/results/agent events; outbox → RabbitMQ + `incident.lifecycle.v1` |
 | notification-service | Go | Channel config, routing, delivery with retries, signed webhooks | `notifications` DB | gRPC | consumes `notifications.deliver` |
 | agent-manager | Go | Agent enrollment, internal CA, cert rotation, heartbeats, command channel | `agents` DB | gRPC (agent stream + internal) | produces `agent.events.v1` |

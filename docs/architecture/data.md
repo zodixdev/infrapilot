@@ -34,8 +34,9 @@ Other services get data only through gRPC or events.
   to list a user's organizations in one query (ADR-0023).
 - Unique constraints and foreign keys on tenant tables include `organization_id`; views use `security_invoker`.
   `pgtest.AssertTenantSchema` enforces both in every service's integration suite (ADR-0018).
-- TimescaleDB/ClickHouse queries go only through query-service, which injects `organization_id` filters
-  and enforces time-range and row limits.
+- Analytics queries enter through query-service, which enforces tenant filters and time-range and row
+  limits. For TimescaleDB, stream-processor performs the SQL reads and enforces RLS under the
+  caller's tenant from the internal read RPC (ADR-0030).
 - Every service has a cross-tenant access test suite.
 
 ## 3. Kafka topics

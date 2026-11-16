@@ -44,4 +44,7 @@ Option 3.
 ## Verification
 - Stale-lease test: pause a worker past its lease (test hook), let another claim and complete, resume the first:
   its completion is fenced, its result is dropped downstream, exactly one effective result and at most one incident.
-- Load: 50k checks / 3 replicas, kill a replica; schedule drift p95 < 5 s; zero duplicate effective results.
+- M03 load gate uses 10k checks across 3 replicas on kind with schedule drift p95 < 5 s. Verify stale-worker
+  fencing and recovery when a replica is killed.
+- M10 validates 50k checks across 3 replicas. Kill a replica and require schedule drift p95 < 5 s and zero
+  duplicate effective results.

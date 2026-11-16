@@ -15,7 +15,9 @@ Two query shapes:
 4. **TimescaleDB (hypertables, continuous aggregates, retention/compression policies) + ClickHouse (MergeTree, TTL).**
 
 ## Decision
-Option 4. Writes only from stream-processor (batched), reads only through query-service.
+Option 4. Writes only from stream-processor (batched), reads only through query-service. For
+TimescaleDB, ADR-0030 supersedes the native continuous aggregate and columnstore choice and defines
+the owner-served read path.
 
 ## Verification (M06/M10)
 Benchmark both stores with the capacity design point; record ingest rate, storage per day, p95 query

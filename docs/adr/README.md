@@ -34,5 +34,7 @@ and list it in the milestone report so the owner can review it later.
 | [0026](0026-gateway-edge.md) | Gateway JWKS cache, API-key/permission caches, GCRA rate limiting failing open |
 | [0027](0027-control-plane-retention.md) | Soft delete + purge CronJob under the batch role; retention per table |
 | [0028](0028-idempotency-fingerprint.md) | Stable idempotency fingerprints from control-plane service inputs (refines 0024) |
+| [0029](0029-otlp-ingestion-milestones.md) | OTLP metrics in M03, agent identity in M05, and logs and traces in M06 |
+| [0030](0030-tenant-isolated-timescale-storage.md) | Timescale rowstore RLS, transactional rollups, TOAST compression and owner-served reads (refines 0007) |
 
 Template: [0000-template.md](0000-template.md)

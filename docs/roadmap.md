@@ -43,15 +43,18 @@ Status values: `not started` · `in progress` · `done`. Update this file when a
 F01, F02, F03 tests; `EXPLAIN ANALYZE` for list endpoints; k6 smoke test p99 < 300 ms at 200 rps on kind;
 dashboards + alerts + runbooks for both services.
 
-## M03 — Checks & telemetry pipeline · status: not started
+## M03 — Checks & telemetry pipeline · status: in progress
 
 **Scope:** compose profile `stream` (Kafka KRaft, TimescaleDB); `pkg/` additions driven by this milestone:
 outbox table + dispatcher, Kafka producer/consumer framework (retries, DLQ, lag metrics, pause/resume),
 SSRF-safe dialer; control-plane starts publishing `resource.state.v1` through the outbox;
 check-runner (HTTP/TCP/TLS-expiry/DNS/ICMP checks, lease scheduler with fencing per ADR-0013, worker pool,
 SSRF guard, per-tenant limits); Kafka topics as code; stream-processor (batched writes to TimescaleDB,
-hypertables, continuous aggregates, retention/compression, threshold rules → `signals.v1`); query-service
+hypertables, transactional rollups, retention and TOAST compression under tenant RLS per ADR-0030,
+threshold rules → `signals.v1`); query-service
 (metrics/check-results read API, tenant-scoped, bounded); public API for checks and results.
+Customer metrics enter through the OTLP metrics receiver with project API-key authentication, quotas, and
+Kafka backpressure (ADR-0029).
 
 **Acceptance:** F04, F05, F06, F07, F08-pattern (outbox survives Kafka outage) tests; stale-lease test (paused worker
 cannot advance schedule or produce a second effective result); SSRF tests incl. DNS rebinding and redirects; scheduling drift p95 < 5 s with 10k checks / 3 replicas on kind;
@@ -72,14 +75,15 @@ recovery → resolved; state-machine property tests; detection p95 < 30 s and no
 **Scope:** agent-manager (enrollment tokens, internal CA, CSR signing, rotation, revocation, bidi stream,
 heartbeats, `agent.events.v1`); infra-agent (host metrics via OTLP, systemd unit status, disk-buffered telemetry,
 reconnect with backoff+jitter, signed-command verification stub enforced from day one); packaging (static binary,
-systemd unit, install script, container image).
+systemd unit, install script, container image). Add agent certificate authentication for OTLP metrics (ADR-0029).
 
 **Acceptance:** F11, F12 tests; 1,000 simulated agents against one agent-manager replica on kind with
 CPU/memory/goroutine numbers recorded; no goroutine leak after 1,000 connect/disconnect cycles (goleak + pprof).
 
 ## M06 — Logs & traces · status: not started
 
-**Scope:** compose profile `analytics` (ClickHouse, MinIO); telemetry-ingestion (OTLP gRPC/HTTP, API key + mTLS auth, quotas, backpressure); ClickHouse schemas
+**Scope:** compose profile `analytics` (ClickHouse, MinIO); extend the authenticated OTLP receiver to logs and
+traces with signal-specific quotas and backpressure (ADR-0029); ClickHouse schemas
 with TTL; stream-processor logs/spans writers; query-service log search + trace lookup; S3 archive for raw batches.
 
 **Acceptance:** F04, F13 tests; sustained 20k events/s on kind with p95 queryable < 10 s; ADR-0007 benchmark

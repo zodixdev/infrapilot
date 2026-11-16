@@ -41,7 +41,8 @@ the last owner. Later milestones add permissions (checks, incidents, workflows) 
 
 **API keys** are project-scoped, created by owner/admin, and never carry membership, key or org-management rights:
 `read` → `org.read`, `project.read`, `resource.read` limited to the key's project; `write` → `read` plus
-`resource.write` in that project; `ingest` → telemetry ingestion only (M06), no control-plane permissions.
+`resource.write` in that project; `ingest` → telemetry ingestion only (starting in M03 per ADR-0029), no
+control-plane API permissions.
 Format: `ipk_` + 43 chars base64url (32 random bytes); stored as SHA-256 (high-entropy secret, so an unsalted fast
 hash is appropriate and allows an indexed lookup); a non-secret display prefix (`ipk_` + 8 chars) is stored for UIs;
 the full key is returned once. Keys may carry an expiry; revocation is a timestamp.
