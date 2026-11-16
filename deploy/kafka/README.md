@@ -1,6 +1,6 @@
 # M03 Kafka topics
 
-`topics.conf` declares the partition count and cleanup policy for the four M03 topics and their dead-letter queues. Each dead-letter queue uses one partition and seven days of retention. The resource state topic uses compaction. The delete-policy topics specify their age limit in milliseconds.
+`topics.conf` declares the partition count and cleanup policy for the four M03 topics and their dead-letter queues. Each dead-letter queue uses one partition and seven days of retention. The resource state topic uses compaction with seven days of tombstone retention for projection recovery (ADR-0031). The delete-policy topics specify their age limit in milliseconds.
 
 From the repository root, start the Compose broker and run the provisioner in its pinned Kafka container.
 

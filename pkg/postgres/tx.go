@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // ErrNoTenant is returned when WithTx is called with the nil UUID.
@@ -86,9 +87,12 @@ func (p *Pool) runTx(ctx context.Context, orgID, userID string, fn func(ctx cont
 			err = errors.Join(err, fmt.Errorf("postgres: rollback: %w", rbErr))
 		}
 	}()
-	// Always set both values (empty when unused) so a session-level value left on the connection by anything
+	// Always set the values (empty when unused) so a session-level value left on the connection by anything
 	// outside this package can never apply. One statement, one round trip.
-	if _, err := tx.Exec(ctx, "SELECT set_config('app.org_id', $1, true), set_config('app.user_id', $2, true)", orgID, userID); err != nil {
+	traceContext := propagation.MapCarrier{}
+	propagation.TraceContext{}.Inject(ctx, traceContext)
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.org_id', $1, true),
+		set_config('app.user_id', $2, true), set_config('app.trace_parent', $3, true)`, orgID, userID, traceContext.Get("traceparent")); err != nil {
 		return fmt.Errorf("postgres: set tenant: %w", err)
 	}
 	if err := fn(ctx, tx); err != nil {

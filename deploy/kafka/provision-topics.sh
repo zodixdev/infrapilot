@@ -43,7 +43,7 @@ selector=$(awk -F '|' '
     /^#/ || NF == 0 { next }
     NF != 4 || $1 !~ /^[a-z0-9][a-z0-9.-]*$/ || seen[$1]++ ||
         $2 !~ /^[1-9][0-9]*$/ || $2 > 2147483647 ||
-        !($3 == "compact" && $4 == "-" || $3 == "delete" && $4 ~ /^[1-9][0-9]*$/) {
+        ($3 != "compact" && $3 != "delete") || $4 !~ /^[1-9][0-9]*$/ {
         invalid = 1
         exit 1
     }
@@ -119,7 +119,8 @@ inspect_topics() {
                 configs = field_value("Configs: ")
                 check_config(topic, configs, "cleanup.policy", cleanup[topic])
                 check_config(topic, configs, "min.insync.replicas", min_isr)
-                if (retention[topic] != "-") check_config(topic, configs, "retention.ms", retention[topic])
+                retention_key = cleanup[topic] == "compact" ? "delete.retention.ms" : "retention.ms"
+                check_config(topic, configs, retention_key, retention[topic])
                 next
             }
 
@@ -160,7 +161,9 @@ if [[ -n "$missing" ]]; then
         fi
 
         configs=(--config "cleanup.policy=$cleanup" --config "min.insync.replicas=$min_isr")
-        if [[ "$retention" != '-' ]]; then
+        if [[ "$cleanup" == 'compact' ]]; then
+            configs+=(--config "delete.retention.ms=$retention")
+        else
             configs+=(--config "retention.ms=$retention")
         fi
         run_kafka --create --if-not-exists --topic "$topic" --partitions "$partitions" \

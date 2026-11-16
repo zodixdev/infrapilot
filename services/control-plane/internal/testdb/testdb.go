@@ -15,8 +15,10 @@ import (
 )
 
 // NonTenantTables are the tables declared non-tenant to AssertTenantSchema: global identities, the pre-tenant
-// API key lookup (ADR-0018) and goose's bookkeeping.
-var NonTenantTables = []string{"users", "api_key_index", "org_create_keys", "goose_db_version"}
+// API key lookup (ADR-0018), goose's bookkeeping and the resource state capture and backfill tables (ADR-0031).
+var NonTenantTables = []string{
+	"users", "api_key_index", "org_create_keys", "goose_db_version", "resource_state_outbox", "resource_state_backfill",
+}
 
 // DB is a migrated database with pools for the runtime (app) and purge (batch) roles.
 type DB struct {

@@ -4,6 +4,9 @@
 -- name: ListExpiredOrganizations :many
 SELECT id FROM organizations WHERE deleted_at < now() - interval '30 days' ORDER BY deleted_at LIMIT @lim;
 
+-- name: LockExpiredOrganization :one
+SELECT lock_expired_organization(@org::uuid)::boolean AS expired;
+
 -- An expired organization is emptied table by table in bounded batches, then deleted, so one large tenant
 -- never becomes one unbounded cascading statement.
 

@@ -148,6 +148,10 @@ func (p *purger) organizations(ctx context.Context) error {
 		for _, org := range orgs {
 			for _, step := range orgSteps {
 				if err := p.drain(ctx, step.table, func(q *db.Queries, ctx context.Context) (int64, error) {
+					expired, err := q.LockExpiredOrganization(ctx, org)
+					if err != nil || !expired {
+						return 0, err
+					}
 					return step.run(q, ctx, org, PurgeBatchSize)
 				}); err != nil {
 					return err

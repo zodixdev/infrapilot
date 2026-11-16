@@ -10,5 +10,8 @@ Protobuf definitions live in `contracts/proto/infrapilot/<domain>/v1/`. This fil
 - `organization_id`: always set for tenant data.
 - `trace_parent`: W3C traceparent of the producing span; also set as a Kafka/AMQP header.
 - Kafka key: see `docs/architecture/data.md` §3. Ordering is per key only.
+- `resource.state.v1` uses `controlplane.resource.changed` for resource lifecycle changes. A purged
+  resource is represented by a Kafka tombstone with its envelope in the `infrapilot-envelope` header
+  (ADR-0031).
 - Adding optional fields is non-breaking. Removing/renaming/retyping fields is breaking → new `v2`.
 - `buf breaking` against the main branch blocks breaking changes in CI.

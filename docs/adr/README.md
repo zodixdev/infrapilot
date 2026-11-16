@@ -36,5 +36,6 @@ and list it in the milestone report so the owner can review it later.
 | [0028](0028-idempotency-fingerprint.md) | Stable idempotency fingerprints from control-plane service inputs (refines 0024) |
 | [0029](0029-otlp-ingestion-milestones.md) | OTLP metrics in M03, agent identity in M05, and logs and traces in M06 |
 | [0030](0030-tenant-isolated-timescale-storage.md) | Timescale rowstore RLS, transactional rollups, TOAST compression and owner-served reads (refines 0007) |
+| [0031](0031-ordered-resource-state.md) | Transactional resource lifecycle capture, ordered delivery and compacted-topic recovery (refines 0005/0018) |
 
 Template: [0000-template.md](0000-template.md)

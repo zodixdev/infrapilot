@@ -50,6 +50,17 @@ func (q *Queries) ListExpiredOrganizations(ctx context.Context, lim int32) ([]uu
 	return items, nil
 }
 
+const lockExpiredOrganization = `-- name: LockExpiredOrganization :one
+SELECT lock_expired_organization($1::uuid)::boolean AS expired
+`
+
+func (q *Queries) LockExpiredOrganization(ctx context.Context, org uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, lockExpiredOrganization, org)
+	var expired bool
+	err := row.Scan(&expired)
+	return expired, err
+}
+
 const purgeAPIKeys = `-- name: PurgeAPIKeys :execrows
 DELETE FROM api_keys WHERE id IN (
     SELECT id FROM api_keys

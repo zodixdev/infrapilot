@@ -26,19 +26,17 @@ var FS embed.FS
 // short lock timeout keeps DDL from queueing behind traffic, and the retry gives it another chance.
 const lockRetries = 5
 
-// Migrate applies every pending migration as the migrator role (MigrationConfig: one connection, no statement
-// timeout, 3 s lock timeout). goose serializes concurrent runners with a Postgres session advisory lock, so
-// parallel Helm hook jobs are safe. Each migration commits on its own, so a retry resumes after the last
-// applied one.
+// Migrate applies pending migrations and backfills resource state as the migrator role. Goose and the
+// backfill checkpoint serialize concurrent Helm hook jobs. Retries resume from the last commit.
 func Migrate(ctx context.Context, url string, logger *slog.Logger) error {
 	backoff := time.Second
 	for attempt := 1; ; attempt++ {
 		err := migrateOnce(ctx, url, logger)
 		var pgErr *pgconn.PgError
-		if err == nil || !errors.As(err, &pgErr) || pgErr.Code != "55P03" || attempt == lockRetries {
+		if err == nil || !errors.As(err, &pgErr) || (pgErr.Code != "55P03" && pgErr.Code != "40P01") || attempt == lockRetries {
 			return err
 		}
-		logger.WarnContext(ctx, "migration hit lock_timeout; retrying", slog.Int("attempt", attempt), slog.Duration("backoff", backoff))
+		logger.WarnContext(ctx, "migration lock conflict; retrying", slog.String("sqlstate", pgErr.Code), slog.Int("attempt", attempt), slog.Duration("backoff", backoff))
 		select {
 		case <-ctx.Done():
 			return errors.Join(err, ctx.Err())
@@ -76,5 +74,5 @@ func migrateOnce(ctx context.Context, url string, logger *slog.Logger) error {
 		}
 		return fmt.Errorf("migrations: migrate: %w", err)
 	}
-	return nil
+	return backfillResourceState(ctx, db, logger)
 }

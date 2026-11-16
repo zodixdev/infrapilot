@@ -6,6 +6,7 @@
 |---|---|---|---|---|---|
 | Orgs, projects, members, roles, API keys, resources | control-plane | PostgreSQL `controlplane` | yes | until deleted (+30d soft delete) | strong (tx) |
 | Control-plane audit events, idempotency records | control-plane | PostgreSQL `controlplane` | yes | audit 400d (append-only), idempotency 24h — ADR-0027 | strong (tx) |
+| Resource lifecycle outbox | control-plane | PostgreSQL `controlplane` | derived from resource state | pending until acknowledgment, then 7d | strong capture, eventual delivery (ADR-0031) |
 | Check definitions, leases, last state | check-runner | PostgreSQL `checks` | yes | until deleted | strong |
 | Check results (raw) | stream-processor | TimescaleDB `check_results` hypertable | yes | 7d raw, 90d 5-min rollups | eventual (≤10 s) |
 | Host & app metrics | stream-processor | TimescaleDB `metrics` hypertable | yes | 7d raw, 30d 1-min, 400d 1-h rollups | eventual |
@@ -51,7 +52,7 @@ All topics: replication factor 3 (prod), `min.insync.replicas=2`, producers `ack
 | `telemetry.spans.v1` | `org_id/trace_id` | 48 | 1d | ingestion → stream-processor |
 | `agent.events.v1` | `org_id/agent_id` | 12 | 7d | agent-manager → incident-engine, control-plane |
 | `signals.v1` | `org_id/resource_id` | 24 | 3d | stream-processor → incident-engine |
-| `resource.state.v1` | `org_id/resource_id` | 12 | compacted | control-plane → check-runner, incident-engine |
+| `resource.state.v1` | `org_id/resource_id` | 12 | compacted, 7d tombstones (ADR-0031) | control-plane → check-runner, incident-engine |
 | `incident.lifecycle.v1` | `org_id/incident_id` | 12 | 30d | incident-engine → workflow-engine, (future) analytics |
 
 Ordering is guaranteed only per key. Consumers commit offsets **after** durable processing (at-least-once).

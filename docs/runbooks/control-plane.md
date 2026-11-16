@@ -47,14 +47,20 @@ SPIFFE identities. Leave it empty where telemetry-ingestion is absent. Keep this
 - **Restoring a deleted organization (within 30 days):** run as the migrator role (owner, bypasses RLS), in one
   transaction, recording who did it and why in the organization's audit log:
   ```sql
-  BEGIN;
-  UPDATE organizations SET deleted_at = NULL, updated_at = now() WHERE id = '<org>' AND deleted_at IS NOT NULL;
+  BEGIN ISOLATION LEVEL READ COMMITTED;
+  SELECT id FROM organizations WHERE id = '<org>' FOR UPDATE;
+  UPDATE organizations SET deleted_at = NULL, updated_at = now()
+    WHERE id = '<org>' AND deleted_at >= clock_timestamp() - interval '30 days'
+    RETURNING id;
+  -- Continue only if exactly one row was returned. Otherwise roll back the transaction.
   INSERT INTO audit_events (id, organization_id, actor_kind, actor_id, action, target_type, target_id, details, request_id)
   VALUES (gen_random_uuid(), '<org>', 'user', '<operator user id>', 'org.restored', 'organization', '<org>',
           jsonb_build_object('ticket', '<incident or ticket id>'), '<ticket id>');
   COMMIT;
   ```
-  API keys stay revoked — owners create new ones.
+  The restore also captures currently live child resources for republication. API keys stay revoked and owners create new ones.
+  During the M02 to M03 upgrade, wait for any running M02 purge before restoring, and suspend the M02 purge
+  schedule until the M03 job is installed. The M03 purge and restore coordinate through the organization row lock.
 - **Removing a stuck membership:** never edit `memberships` directly; use the API so the change is audited.
 - **Overlapping retention runs:** the CronJob forbids concurrency; a manually started run that overlaps a scheduled one
   waits on the other's row locks, fails on the 5-minute idle/lock limits without deleting anything twice, and the next

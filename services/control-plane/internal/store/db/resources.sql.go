@@ -12,7 +12,7 @@ import (
 )
 
 const getResource = `-- name: GetResource :one
-SELECT id, organization_id, project_id, kind, name, labels, created_at, updated_at, deleted_at FROM resources
+SELECT id, organization_id, project_id, kind, name, labels, created_at, updated_at, deleted_at, state_enrolled FROM resources
 WHERE organization_id = $1 AND project_id = $2 AND id = $3 AND deleted_at IS NULL
 `
 
@@ -35,6 +35,7 @@ func (q *Queries) GetResource(ctx context.Context, arg GetResourceParams) (Resou
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.StateEnrolled,
 	)
 	return i, err
 }
@@ -42,7 +43,7 @@ func (q *Queries) GetResource(ctx context.Context, arg GetResourceParams) (Resou
 const insertResource = `-- name: InsertResource :one
 INSERT INTO resources (id, organization_id, project_id, kind, name, labels)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, organization_id, project_id, kind, name, labels, created_at, updated_at, deleted_at
+RETURNING id, organization_id, project_id, kind, name, labels, created_at, updated_at, deleted_at, state_enrolled
 `
 
 type InsertResourceParams struct {
@@ -74,12 +75,13 @@ func (q *Queries) InsertResource(ctx context.Context, arg InsertResourceParams) 
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.StateEnrolled,
 	)
 	return i, err
 }
 
 const listResources = `-- name: ListResources :many
-SELECT id, organization_id, project_id, kind, name, labels, created_at, updated_at, deleted_at FROM resources
+SELECT id, organization_id, project_id, kind, name, labels, created_at, updated_at, deleted_at, state_enrolled FROM resources
 WHERE organization_id = $1 AND project_id = $2 AND id > $3 AND deleted_at IS NULL
 ORDER BY id
 LIMIT $4
@@ -116,6 +118,7 @@ func (q *Queries) ListResources(ctx context.Context, arg ListResourcesParams) ([
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
+			&i.StateEnrolled,
 		); err != nil {
 			return nil, err
 		}
@@ -128,7 +131,7 @@ func (q *Queries) ListResources(ctx context.Context, arg ListResourcesParams) ([
 }
 
 const listResourcesByKind = `-- name: ListResourcesByKind :many
-SELECT id, organization_id, project_id, kind, name, labels, created_at, updated_at, deleted_at FROM resources
+SELECT id, organization_id, project_id, kind, name, labels, created_at, updated_at, deleted_at, state_enrolled FROM resources
 WHERE organization_id = $1 AND project_id = $2 AND kind = $3 AND id > $4 AND deleted_at IS NULL
 ORDER BY id
 LIMIT $5
@@ -167,6 +170,7 @@ func (q *Queries) ListResourcesByKind(ctx context.Context, arg ListResourcesByKi
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
+			&i.StateEnrolled,
 		); err != nil {
 			return nil, err
 		}
@@ -218,7 +222,7 @@ SET name       = coalesce($1, name),
     labels     = coalesce($2, labels),
     updated_at = now()
 WHERE organization_id = $3 AND project_id = $4 AND id = $5 AND deleted_at IS NULL
-RETURNING id, organization_id, project_id, kind, name, labels, created_at, updated_at, deleted_at
+RETURNING id, organization_id, project_id, kind, name, labels, created_at, updated_at, deleted_at, state_enrolled
 `
 
 type UpdateResourceParams struct {
@@ -248,6 +252,7 @@ func (q *Queries) UpdateResource(ctx context.Context, arg UpdateResourceParams) 
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.StateEnrolled,
 	)
 	return i, err
 }

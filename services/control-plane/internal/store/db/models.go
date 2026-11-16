@@ -104,6 +104,23 @@ type Resource struct {
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	DeletedAt      *time.Time
+	StateEnrolled  bool
+}
+
+type ResourceStateBackfill struct {
+	Singleton   bool
+	AfterID     uuid.UUID
+	LastID      *uuid.UUID
+	CompletedAt *time.Time
+}
+
+type ResourceStateOutbox struct {
+	Revision    int64
+	RoutingKey  string
+	ProjectID   uuid.UUID
+	Status      int16
+	CapturedAt  time.Time
+	TraceParent string
 }
 
 type User struct {

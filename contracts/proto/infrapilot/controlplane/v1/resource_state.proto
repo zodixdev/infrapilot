@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package infrapilot.controlplane.v1;
+
+// ResourceStateStatus describes a resource's effective availability to the scheduler.
+enum ResourceStateStatus {
+  RESOURCE_STATE_STATUS_UNSPECIFIED = 0;
+  RESOURCE_STATE_STATUS_ACTIVE = 1;
+  RESOURCE_STATE_STATUS_INACTIVE = 2;
+  RESOURCE_STATE_STATUS_PURGED = 3;
+}
+
+// ResourceStateChanged is the payload of controlplane.resource.changed.
+// The envelope carries the organization and resource IDs.
+message ResourceStateChanged {
+  string project_id = 1;
+  ResourceStateStatus status = 2;
+  // Positive and strictly increasing for a resource. Gaps are valid.
+  uint64 revision = 3;
+}

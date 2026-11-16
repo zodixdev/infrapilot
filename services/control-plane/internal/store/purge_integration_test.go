@@ -8,12 +8,45 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/require"
 
 	"github.com/zodixdev/infrapilot/services/control-plane/internal/store"
 	"github.com/zodixdev/infrapilot/services/control-plane/internal/store/db"
 	"github.com/zodixdev/infrapilot/services/control-plane/internal/testdb"
 )
+
+func TestPurge_RechecksExpiredOrganization_Integration(t *testing.T) {
+	d := testdb.Start(t)
+	ctx := t.Context()
+	tenant := seedTenant(t, d, "restored")
+	migrator, err := pgx.Connect(ctx, d.MigratorURL)
+	require.NoError(t, err)
+	defer func() { _ = migrator.Close(context.WithoutCancel(ctx)) }()
+	_, err = migrator.Exec(ctx, `UPDATE organizations SET deleted_at = now() - interval '31 days' WHERE id = $1`, tenant.org)
+	require.NoError(t, err)
+	var expiredIDs []uuid.UUID
+	require.NoError(t, d.Batch.WithSystemTx(ctx, func(ctx context.Context, tx pgx.Tx) (err error) {
+		expiredIDs, err = db.New(tx).ListExpiredOrganizations(ctx, 100)
+		return err
+	}))
+	require.Equal(t, []uuid.UUID{tenant.org}, expiredIDs)
+	_, err = migrator.Exec(ctx, `UPDATE organizations SET deleted_at = NULL WHERE id = $1`, tenant.org)
+	require.NoError(t, err)
+	var stillExpired bool
+	require.NoError(t, d.Batch.WithSystemTx(ctx, func(ctx context.Context, tx pgx.Tx) (err error) {
+		stillExpired, err = db.New(tx).LockExpiredOrganization(ctx, expiredIDs[0])
+		return err
+	}))
+	require.False(t, stillExpired)
+	err = d.App.WithTx(ctx, tenant.org, func(ctx context.Context, tx pgx.Tx) error {
+		_, lockErr := db.New(tx).LockExpiredOrganization(ctx, tenant.org)
+		return lockErr
+	})
+	var denied *pgconn.PgError
+	require.ErrorAs(t, err, &denied)
+	require.Equal(t, "42501", denied.Code)
+}
 
 func TestPurge_Retention_Integration(t *testing.T) {
 	d := testdb.Start(t)

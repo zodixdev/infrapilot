@@ -169,6 +169,9 @@ func (s *Service) DeleteProject(ctx context.Context, a Actor, org, id uuid.UUID)
 		if _, err := authorize(ctx, q, a, org, domain.PermProjectWrite, uuid.Nil); err != nil {
 			return err
 		}
+		if _, err := q.LockLiveOrganization(ctx, org); err != nil {
+			return notFound(err, "organization %s", org)
+		}
 		n, err := q.SoftDeleteProject(ctx, db.SoftDeleteProjectParams{OrganizationID: org, ID: id})
 		if err != nil {
 			return fmt.Errorf("delete project: %w", err)

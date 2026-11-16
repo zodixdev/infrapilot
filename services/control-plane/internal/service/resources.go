@@ -48,7 +48,7 @@ func (s *Service) CreateResource(ctx context.Context, a Actor, org, project uuid
 			if _, err := authorize(ctx, q, a, org, domain.PermResourceWrite, project); err != nil {
 				return domain.Resource{}, uuid.Nil, err
 			}
-			if err := lockLiveProject(ctx, q, org, project); err != nil {
+			if err := lockResourceParents(ctx, q, org, project); err != nil {
 				return domain.Resource{}, uuid.Nil, err
 			}
 			row, err := q.InsertResource(ctx, db.InsertResourceParams{ID: newID(), OrganizationID: org, ProjectID: project,
@@ -157,7 +157,7 @@ func (s *Service) UpdateResource(ctx context.Context, a Actor, org, project, id 
 		if _, err := authorize(ctx, q, a, org, domain.PermResourceWrite, project); err != nil {
 			return err
 		}
-		if err := lockLiveProject(ctx, q, org, project); err != nil {
+		if err := lockResourceParents(ctx, q, org, project); err != nil {
 			return err
 		}
 		row, err := q.UpdateResource(ctx, db.UpdateResourceParams{OrganizationID: org, ProjectID: project, ID: id, Name: in.Name, Labels: labels})
@@ -177,6 +177,9 @@ func (s *Service) DeleteResource(ctx context.Context, a Actor, org, project, id 
 		if _, err := authorize(ctx, q, a, org, domain.PermResourceWrite, project); err != nil {
 			return err
 		}
+		if err := lockResourceParents(ctx, q, org, project); err != nil {
+			return err
+		}
 		n, err := q.SoftDeleteResource(ctx, db.SoftDeleteResourceParams{OrganizationID: org, ProjectID: project, ID: id})
 		if err != nil {
 			return fmt.Errorf("delete resource: %w", err)
@@ -186,6 +189,13 @@ func (s *Service) DeleteResource(ctx context.Context, a Actor, org, project, id 
 		}
 		return nil
 	})
+}
+
+func lockResourceParents(ctx context.Context, q *db.Queries, org, project uuid.UUID) error {
+	if _, err := q.LockLiveOrganization(ctx, org); err != nil {
+		return notFound(err, "organization %s", org)
+	}
+	return lockLiveProject(ctx, q, org, project)
 }
 
 func marshalLabels(l map[string]string) ([]byte, error) {

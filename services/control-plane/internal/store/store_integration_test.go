@@ -78,7 +78,7 @@ func count(ctx context.Context, tx pgx.Tx, table, where string, args ...any) (in
 
 func TestSchema_Integration(t *testing.T) {
 	d := testdb.Start(t)
-	pgtest.AssertTenantSchema(t, d.MigratorURL, pgtest.AppRole, testdb.NonTenantTables, nil)
+	pgtest.AssertTenantSchema(t, d.MigratorURL, pgtest.AppRole, testdb.NonTenantTables, []string{"lock_expired_organization"})
 
 	// Re-running is a no-op (Helm hooks run on every upgrade).
 	require.NoError(t, migrations.Migrate(t.Context(), d.MigratorURL, slog.New(slog.DiscardHandler)))
