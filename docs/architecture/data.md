@@ -56,6 +56,8 @@ All topics: replication factor 3 (prod), `min.insync.replicas=2`, producers `ack
 
 Ordering is guaranteed only per key. Consumers commit offsets **after** durable processing (at-least-once).
 Poison messages → `<topic>.dlq` after N attempts with error metadata headers.
+The M03 dead-letter topics have one partition and seven days of retention. The
+[topic manifest and provisioner](../../deploy/kafka/README.md) define the M03 Kafka topology.
 
 ## 4. RabbitMQ queues
 
