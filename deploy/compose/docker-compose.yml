@@ -1,9 +1,10 @@
 # Local dependencies for InfraPilot (ADR-0011). Start only what you need:
 #   make up PROFILE=core        postgres, redis, keycloak
 #   make up PROFILE=core,obs    + otel-collector, prometheus, tempo, loki, grafana
+#   make up PROFILE=stream      kafka, timescaledb
 # Secrets come from the git-ignored .env (make secrets). Images are pinned.
-# Every port binds to ${BIND_ADDR:-127.0.0.1}: nothing is reachable from the LAN. Only the OTLP receiver can be
-# opened wider (OTLP_BIND_ADDR) for Linux CI, where kind nodes reach the host via the docker bridge gateway.
+# Published ports default to loopback. The stream profile listens on loopback only. The OTLP receiver supports
+# OTLP_BIND_ADDR for Linux CI, where kind nodes reach the host via the docker bridge gateway.
 name: infrapilot
 
 x-logging: &logging
@@ -93,6 +94,82 @@ services:
       timeout: 5s
       retries: 30
       start_period: 60s
+    deploy:
+      resources:
+        limits: { memory: 768M }
+
+  # ---------------------------------------------------------------- stream
+  kafka:
+    image: apache/kafka:4.3.2@sha256:852a0d49fc4e656b022e7f23785411802c9a088c78a7c5e39f33969de9c227a7
+    profiles: [stream]
+    <<: *logging
+    environment:
+      # Single-node KRaft for local development. The cluster ID is part of the volume's format.
+      CLUSTER_ID: PPAVlMrJQEW4p2J14OQO7A
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_LISTENERS: INTERNAL://:19092,HOST://:9092,CONTROLLER://:29093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,HOST://127.0.0.1:${KAFKA_PORT:-9092}
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: "1"
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+    ports: ["127.0.0.1:${KAFKA_PORT:-9092}:9092"]
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - KAFKA_HEAP_OPTS='-Xms32m -Xmx128m' /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --list
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    deploy:
+      resources:
+        limits: { memory: 1024M }
+
+  timescaledb:
+    image: timescale/timescaledb:2.32.0-pg17@sha256:6a6b7d7a346d7c6be03a310c240706f3bbc6d7adbdf3fbc07823570b34337f5e
+    profiles: [stream]
+    <<: *logging
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: telemetry
+      TIMESCALEDB_TELEMETRY: "off"
+      NO_TS_TUNE: "true"
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=timescaledb,pg_stat_statements
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - max_connections=100
+    ports: ["127.0.0.1:${TIMESCALEDB_PORT:-5434}:5432"]
+    volumes:
+      - timescaledb-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          PGPASSWORD="$$POSTGRES_PASSWORD" psql --no-password -XAt
+          -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"
+          -c "SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'" | grep -qx 1
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
     deploy:
       resources:
         limits: { memory: 768M }
@@ -206,6 +283,8 @@ services:
 
 volumes:
   postgres-data:
+  kafka-data:
+  timescaledb-data:
   prometheus-data:
   tempo-data:
   loki-data:
