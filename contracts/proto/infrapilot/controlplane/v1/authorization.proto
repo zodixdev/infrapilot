@@ -15,6 +15,23 @@ service AuthorizationService {
   rpc AuthenticateApiKey(AuthenticateApiKeyRequest) returns (AuthenticateApiKeyResponse);
 }
 
+// IngestionAuthorizationService binds a telemetry credential to a resource (ADR-0029).
+service IngestionAuthorizationService {
+  // Requires the telemetry-ingestion workload identity. The authenticated key determines the tenant.
+  rpc ValidateIngestResource(ValidateIngestResourceRequest) returns (ValidateIngestResourceResponse);
+}
+
+message ValidateIngestResourceRequest {
+  // SHA-256 of the full key text (32 bytes).
+  bytes key_sha256 = 1;
+  string resource_id = 2;
+}
+
+message ValidateIngestResourceResponse {
+  string organization_id = 1;
+  string project_id = 2;
+}
+
 message CheckPermissionRequest {
   string organization_id = 1;
   Permission permission = 2;

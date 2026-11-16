@@ -20,8 +20,11 @@ import (
 	"github.com/zodixdev/infrapilot/services/control-plane/internal/service"
 )
 
-// withoutPrincipal lists RPCs that run before a principal exists (the edge resolving an API key).
-var withoutPrincipal = []string{cpv1.AuthorizationService_AuthenticateApiKey_FullMethodName}
+// withoutPrincipal lists RPCs that authenticate an API key directly after workload authorization.
+var withoutPrincipal = []string{
+	cpv1.AuthorizationService_AuthenticateApiKey_FullMethodName,
+	cpv1.IngestionAuthorizationService_ValidateIngestResource_FullMethodName,
+}
 
 type actorKey struct{}
 

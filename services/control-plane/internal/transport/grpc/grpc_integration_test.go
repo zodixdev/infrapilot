@@ -40,14 +40,15 @@ func TestMain(m *testing.M) {
 }
 
 var (
-	gatewayID = certtest.SPIFFE("infrapilot", "api-gateway")
-	workerID  = certtest.SPIFFE("infrapilot", "check-runner")
-	serverID  = certtest.SPIFFE("infrapilot", "control-plane")
+	gatewayID   = certtest.SPIFFE("infrapilot", "api-gateway")
+	workerID    = certtest.SPIFFE("infrapilot", "check-runner")
+	ingestionID = certtest.SPIFFE("infrapilot", "telemetry-ingestion")
+	serverID    = certtest.SPIFFE("infrapilot", "control-plane")
 )
 
 type harness struct {
-	db              *testdb.DB
-	gateway, worker *grpc.ClientConn
+	db                         *testdb.DB
+	gateway, worker, ingestion *grpc.ClientConn
 }
 
 func start(t *testing.T, opts ...pgtest.Option) *harness {
@@ -62,7 +63,7 @@ func start(t *testing.T, opts ...pgtest.Option) *harness {
 		Addr: "127.0.0.1:0", MaxRecvMsgBytes: 1 << 20, ConnectionTimeout: 5 * time.Second, KeepaliveTime: 30 * time.Second,
 		KeepaliveTimeout: 10 * time.Second, MaxConcurrentStreams: 64,
 		TLSCertFile: srvCert.Cert, TLSKeyFile: srvCert.Key, TLSClientCAFile: ca.File,
-	}, grpcserver.WithPeerPolicy(grpcserver.PeerPolicy{Rules: cpgrpc.PeerRules([]string{gatewayID})}),
+	}, grpcserver.WithPeerPolicy(grpcserver.PeerPolicy{Rules: cpgrpc.PeerRules([]string{gatewayID}, []string{ingestionID})}),
 		grpcserver.WithUnaryInterceptors(cpgrpc.PrincipalInterceptor(svc, []string{gatewayID}, logger)))
 	require.NoError(t, err)
 	cpgrpc.NewServer(svc, logger).Register(srv.Registrar())
@@ -81,7 +82,10 @@ func start(t *testing.T, opts ...pgtest.Option) *harness {
 		t.Cleanup(func() { _ = conn.Close() })
 		return conn
 	}
-	return &harness{db: d, gateway: dial("gateway", gatewayID), worker: dial("worker", workerID)}
+	return &harness{
+		db: d, gateway: dial("gateway", gatewayID), worker: dial("worker", workerID),
+		ingestion: dial("ingestion", ingestionID),
+	}
 }
 
 func asUser(ctx context.Context, t *testing.T, subject string) context.Context {
@@ -169,6 +173,119 @@ func TestGRPC_EndToEnd_Integration(t *testing.T) {
 		require.Equal(t, codes.Unauthenticated, status.Code(err))
 		_, err = cpv1.NewAuthorizationServiceClient(h.worker).AuthenticateApiKey(t.Context(), &cpv1.AuthenticateApiKeyRequest{KeySha256: sum})
 		require.Equal(t, codes.PermissionDenied, status.Code(err), "only the edge resolves raw keys")
+	})
+}
+
+func TestIngestionAuthorization_Integration(t *testing.T) {
+	h := start(t)
+	ctx := t.Context()
+	owner := asUser(ctx, t, "ingest-owner")
+	otherOwner := asUser(ctx, t, "other-owner")
+	orgs := cpv1.NewOrganizationServiceClient(h.gateway)
+	projects := cpv1.NewProjectServiceClient(h.gateway)
+	resources := cpv1.NewResourceServiceClient(h.gateway)
+	keys := cpv1.NewApiKeyServiceClient(h.gateway)
+	ingestion := cpv1.NewIngestionAuthorizationServiceClient(h.ingestion)
+
+	createOrg := func(owner context.Context, name string) string {
+		t.Helper()
+		org, err := orgs.CreateOrganization(owner, &cpv1.CreateOrganizationRequest{Name: name})
+		require.NoError(t, err)
+		return org.GetOrganization().GetId()
+	}
+	createProject := func(owner context.Context, org, slug string) string {
+		t.Helper()
+		project, err := projects.CreateProject(owner, &cpv1.CreateProjectRequest{OrganizationId: org, Name: slug, Slug: slug})
+		require.NoError(t, err)
+		return project.GetProject().GetId()
+	}
+	createResource := func(owner context.Context, org, project, name string) string {
+		t.Helper()
+		resource, err := resources.CreateResource(owner, &cpv1.CreateResourceRequest{
+			OrganizationId: org, ProjectId: project, Kind: cpv1.ResourceKind_RESOURCE_KIND_HOST, Name: name,
+		})
+		require.NoError(t, err)
+		return resource.GetResource().GetId()
+	}
+
+	org := createOrg(owner, "Telemetry")
+	project := createProject(owner, org, "ingest")
+	resource := createResource(owner, org, project, "host")
+	otherProject := createProject(owner, org, "other")
+	otherProjectResource := createResource(owner, org, otherProject, "host")
+	foreignOrg := createOrg(otherOwner, "Foreign")
+	foreignProject := createProject(otherOwner, foreignOrg, "foreign")
+	foreignResource := createResource(otherOwner, foreignOrg, foreignProject, "host")
+
+	createKey := func(project, name string, scope cpv1.ApiKeyScope) *cpv1.CreateApiKeyResponse {
+		t.Helper()
+		key, err := keys.CreateApiKey(owner, &cpv1.CreateApiKeyRequest{
+			OrganizationId: org, ProjectId: project, Name: name, Scopes: []cpv1.ApiKeyScope{scope},
+		})
+		require.NoError(t, err)
+		return key
+	}
+	ingestKey := createKey(project, "Ingest", cpv1.ApiKeyScope_API_KEY_SCOPE_INGEST)
+	boundRequest := &cpv1.ValidateIngestResourceRequest{KeySha256: sha256Sum(ingestKey.GetSecret()), ResourceId: resource}
+	got, err := ingestion.ValidateIngestResource(ctx, boundRequest)
+	require.NoError(t, err)
+	require.Equal(t, org, got.GetOrganizationId())
+	require.Equal(t, project, got.GetProjectId())
+
+	readKey := createKey(project, "Read", cpv1.ApiKeyScope_API_KEY_SCOPE_READ)
+	deletedResource := createResource(owner, org, project, "retired")
+	_, err = resources.DeleteResource(owner, &cpv1.DeleteResourceRequest{
+		OrganizationId: org, ProjectId: project, ResourceId: deletedResource,
+	})
+	require.NoError(t, err)
+	deletedProject := createProject(owner, org, "retired")
+	deletedProjectResource := createResource(owner, org, deletedProject, "host")
+	deletedProjectKey := createKey(deletedProject, "Old project", cpv1.ApiKeyScope_API_KEY_SCOPE_INGEST)
+	_, err = projects.DeleteProject(owner, &cpv1.DeleteProjectRequest{OrganizationId: org, ProjectId: deletedProject})
+	require.NoError(t, err)
+
+	for _, tt := range []struct {
+		name     string
+		key      []byte
+		resource string
+		want     codes.Code
+	}{
+		{"read scope", sha256Sum(readKey.GetSecret()), resource, codes.PermissionDenied},
+		{"foreign project", boundRequest.GetKeySha256(), otherProjectResource, codes.PermissionDenied},
+		{"foreign tenant", boundRequest.GetKeySha256(), foreignResource, codes.PermissionDenied},
+		{"deleted resource", boundRequest.GetKeySha256(), deletedResource, codes.PermissionDenied},
+		{"deleted project", sha256Sum(deletedProjectKey.GetSecret()), deletedProjectResource, codes.Unauthenticated},
+		{"unknown key", make([]byte, sha256.Size), resource, codes.Unauthenticated},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			response, err := ingestion.ValidateIngestResource(t.Context(), &cpv1.ValidateIngestResourceRequest{
+				KeySha256: tt.key, ResourceId: tt.resource,
+			})
+			require.Equal(t, tt.want, status.Code(err))
+			require.Nil(t, response)
+		})
+	}
+
+	t.Run("only the ingestion workload can bind credentials", func(t *testing.T) {
+		for _, peer := range []*grpc.ClientConn{h.gateway, h.worker} {
+			_, err := cpv1.NewIngestionAuthorizationServiceClient(peer).ValidateIngestResource(t.Context(), boundRequest)
+			require.Equal(t, codes.PermissionDenied, status.Code(err))
+		}
+	})
+	t.Run("ingestion cannot act as the edge", func(t *testing.T) {
+		authz := cpv1.NewAuthorizationServiceClient(h.ingestion)
+		_, err := authz.AuthenticateApiKey(t.Context(), &cpv1.AuthenticateApiKeyRequest{KeySha256: boundRequest.GetKeySha256()})
+		require.Equal(t, codes.PermissionDenied, status.Code(err))
+		_, err = authz.CheckPermission(owner, &cpv1.CheckPermissionRequest{
+			OrganizationId: org, Permission: cpv1.Permission_PERMISSION_ORG_READ,
+		})
+		require.Equal(t, codes.PermissionDenied, status.Code(err))
+	})
+	t.Run("revoked key", func(t *testing.T) {
+		_, err := keys.RevokeApiKey(owner, &cpv1.RevokeApiKeyRequest{OrganizationId: org, ApiKeyId: ingestKey.GetApiKey().GetId()})
+		require.NoError(t, err)
+		_, err = ingestion.ValidateIngestResource(t.Context(), boundRequest)
+		require.Equal(t, codes.Unauthenticated, status.Code(err))
 	})
 }
 

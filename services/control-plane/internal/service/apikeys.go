@@ -191,6 +191,38 @@ func (s *Service) AuthenticateAPIKey(ctx context.Context, hash []byte) (domain.K
 	return out, err
 }
 
+// IngestionBinding identifies the tenant and project permitted to accept a resource's telemetry.
+type IngestionBinding struct {
+	OrganizationID uuid.UUID
+	ProjectID      uuid.UUID
+}
+
+// ValidateIngestResource checks the resource against the live project and ingest-scoped key (ADR-0029).
+func (s *Service) ValidateIngestResource(ctx context.Context, hash []byte, resource uuid.UUID) (IngestionBinding, error) {
+	key, err := s.AuthenticateAPIKey(ctx, hash)
+	if err != nil {
+		return IngestionBinding{}, err
+	}
+	var out IngestionBinding
+	err = s.pool.WithTx(ctx, key.OrganizationID, func(ctx context.Context, tx pgx.Tx) error {
+		project, lookupErr := db.New(tx).GetIngestProject(ctx, db.GetIngestProjectParams{
+			OrganizationID: key.OrganizationID, KeyID: key.KeyID, ResourceID: resource,
+		})
+		if errors.Is(lookupErr, pgx.ErrNoRows) {
+			return domain.ErrPermissionDenied
+		}
+		if lookupErr != nil {
+			return fmt.Errorf("validate ingest resource: %w", lookupErr)
+		}
+		out = IngestionBinding{OrganizationID: key.OrganizationID, ProjectID: project}
+		return nil
+	}, postgres.ReadOnly())
+	if err != nil {
+		return IngestionBinding{}, err
+	}
+	return out, nil
+}
+
 func toAPIKey(r *db.ApiKey) domain.APIKey {
 	return domain.APIKey{ID: r.ID, OrganizationID: r.OrganizationID, ProjectID: r.ProjectID, Name: r.Name, Prefix: r.Prefix,
 		Scopes: toScopes(r.Scopes), CreatedBy: r.CreatedBy, CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt, RevokedAt: r.RevokedAt}

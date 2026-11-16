@@ -35,6 +35,7 @@ type Options struct {
 	DatabaseURL, MigrationDatabaseURL, BatchDatabaseURL string
 	DBMaxConns                                          int32
 	EdgeIdentities                                      []string
+	IngestionIdentities                                 []string
 }
 
 func setupTelemetry(ctx context.Context, o *Options) (*telemetry.Provider, error) {
@@ -115,7 +116,7 @@ func Serve(ctx context.Context, o Options) (err error) {
 		MaxConcurrentStreams: c.GRPC.MaxConcurrentStreams,
 		TLSCertFile:          c.GRPC.TLSCertFile, TLSKeyFile: c.GRPC.TLSKeyFile, TLSClientCAFile: c.GRPC.TLSClientCAFile,
 	}, grpcserver.WithLogger(logger), grpcserver.WithTracerProvider(tel.TracerProvider()), grpcserver.WithMeterProvider(tel.MeterProvider()),
-		grpcserver.WithPeerPolicy(grpcserver.PeerPolicy{Rules: cpgrpc.PeerRules(o.EdgeIdentities), InsecureIdentity: insecureIdentity}),
+		grpcserver.WithPeerPolicy(grpcserver.PeerPolicy{Rules: cpgrpc.PeerRules(o.EdgeIdentities, o.IngestionIdentities), InsecureIdentity: insecureIdentity}),
 		grpcserver.WithUnaryInterceptors(cpgrpc.PrincipalInterceptor(svc, o.EdgeIdentities, logger)))
 	if err != nil {
 		return err

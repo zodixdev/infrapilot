@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -31,9 +32,11 @@ type Config struct {
 	BatchDatabaseURL string `env:"BATCH_DATABASE_URL" envDefault:""`
 	DBMaxConns       int32  `env:"DB_MAX_CONNS" envDefault:"10"`
 	// EdgeIdentities are the workload identities allowed to act for end users (ADR-0025).
-	EdgeIdentities []string      `env:"EDGE_IDENTITIES" envSeparator:"," envDefault:""`
-	MigrateTimeout time.Duration `env:"MIGRATE_TIMEOUT" envDefault:"9m"`
-	PurgeTimeout   time.Duration `env:"PURGE_TIMEOUT" envDefault:"50m"`
+	EdgeIdentities []string `env:"EDGE_IDENTITIES" envSeparator:"," envDefault:""`
+	// IngestionIdentities are allowed to bind telemetry credentials to resources (ADR-0029).
+	IngestionIdentities []string      `env:"INGESTION_IDENTITIES" envSeparator:"," envDefault:""`
+	MigrateTimeout      time.Duration `env:"MIGRATE_TIMEOUT" envDefault:"9m"`
+	PurgeTimeout        time.Duration `env:"PURGE_TIMEOUT" envDefault:"50m"`
 }
 
 // Validate checks settings shared by every mode; mode-specific requirements are checked by the mode.
@@ -42,9 +45,15 @@ func (c *Config) Validate() error {
 	if c.DBMaxConns < 1 || c.DBMaxConns > 100 {
 		errs = append(errs, errors.New("DB_MAX_CONNS must be between 1 and 100"))
 	}
-	for _, id := range c.EdgeIdentities {
+	for _, id := range slices.Concat(c.EdgeIdentities, c.IngestionIdentities) {
 		if !strings.HasPrefix(id, "spiffe://") {
 			errs = append(errs, fmt.Errorf("identity %q must be a spiffe:// URI", id))
+		}
+	}
+	for _, id := range c.IngestionIdentities {
+		if slices.Contains(c.EdgeIdentities, id) {
+			errs = append(errs, errors.New("INGESTION_IDENTITIES and EDGE_IDENTITIES must be disjoint"))
+			break
 		}
 	}
 	if c.MigrateTimeout <= 0 || c.PurgeTimeout <= 0 {
@@ -74,7 +83,7 @@ func run(args []string) error {
 	opts := app.Options{
 		Common: cfg.Common, LogConfig: logCfg, Logger: logger,
 		DatabaseURL: cfg.DatabaseURL, MigrationDatabaseURL: cfg.MigrationDatabaseURL, BatchDatabaseURL: cfg.BatchDatabaseURL,
-		DBMaxConns: cfg.DBMaxConns, EdgeIdentities: cfg.EdgeIdentities,
+		DBMaxConns: cfg.DBMaxConns, EdgeIdentities: cfg.EdgeIdentities, IngestionIdentities: cfg.IngestionIdentities,
 	}
 	ctx := context.Background()
 	mode := "serve"

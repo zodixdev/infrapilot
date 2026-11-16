@@ -4,10 +4,8 @@ import (
 	cpv1 "github.com/zodixdev/infrapilot/gen/go/infrapilot/controlplane/v1"
 )
 
-// PeerRules is the control-plane allow-list (ADR-0025): every service serves the edge only. Internal callers of
-// CheckPermission are added by the milestone that introduces them, together with how they obtain a principal
-// (an ADR), because the principal interceptor accepts principals from edge peers only.
-func PeerRules(edge []string) map[string][]string {
+// PeerRules separates the user-facing control-plane APIs from the telemetry credential check.
+func PeerRules(edge, ingestion []string) map[string][]string {
 	edgeOnly := []string{
 		cpv1.OrganizationService_ServiceDesc.ServiceName,
 		cpv1.ProjectService_ServiceDesc.ServiceName,
@@ -21,5 +19,8 @@ func PeerRules(edge []string) map[string][]string {
 		rules["/"+svc+"/*"] = edge
 	}
 	rules["/"+cpv1.AuthorizationService_ServiceDesc.ServiceName+"/*"] = edge
+	if len(ingestion) != 0 {
+		rules[cpv1.IngestionAuthorizationService_ValidateIngestResource_FullMethodName] = ingestion
+	}
 	return rules
 }

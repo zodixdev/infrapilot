@@ -40,6 +40,10 @@ the milestone report; add the missing index through a migration.
 
 ## Operations
 
+`INGESTION_IDENTITIES` enables the credential-to-resource gRPC check for the listed telemetry-ingestion
+SPIFFE identities. Leave it empty where telemetry-ingestion is absent. Keep this list distinct from
+`EDGE_IDENTITIES`, which authorizes workloads to act for end users.
+
 - **Restoring a deleted organization (within 30 days):** run as the migrator role (owner, bypasses RLS), in one
   transaction, recording who did it and why in the organization's audit log:
   ```sql

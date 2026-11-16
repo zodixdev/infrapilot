@@ -169,3 +169,112 @@ var AuthorizationService_ServiceDesc = grpc.ServiceDesc{
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "infrapilot/controlplane/v1/authorization.proto",
 }
+
+const (
+	IngestionAuthorizationService_ValidateIngestResource_FullMethodName = "/infrapilot.controlplane.v1.IngestionAuthorizationService/ValidateIngestResource"
+)
+
+// IngestionAuthorizationServiceClient is the client API for IngestionAuthorizationService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// IngestionAuthorizationService binds a telemetry credential to a resource (ADR-0029).
+type IngestionAuthorizationServiceClient interface {
+	// Requires the telemetry-ingestion workload identity. The authenticated key determines the tenant.
+	ValidateIngestResource(ctx context.Context, in *ValidateIngestResourceRequest, opts ...grpc.CallOption) (*ValidateIngestResourceResponse, error)
+}
+
+type ingestionAuthorizationServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewIngestionAuthorizationServiceClient(cc grpc.ClientConnInterface) IngestionAuthorizationServiceClient {
+	return &ingestionAuthorizationServiceClient{cc}
+}
+
+func (c *ingestionAuthorizationServiceClient) ValidateIngestResource(ctx context.Context, in *ValidateIngestResourceRequest, opts ...grpc.CallOption) (*ValidateIngestResourceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ValidateIngestResourceResponse)
+	err := c.cc.Invoke(ctx, IngestionAuthorizationService_ValidateIngestResource_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// IngestionAuthorizationServiceServer is the server API for IngestionAuthorizationService service.
+// All implementations must embed UnimplementedIngestionAuthorizationServiceServer
+// for forward compatibility.
+//
+// IngestionAuthorizationService binds a telemetry credential to a resource (ADR-0029).
+type IngestionAuthorizationServiceServer interface {
+	// Requires the telemetry-ingestion workload identity. The authenticated key determines the tenant.
+	ValidateIngestResource(context.Context, *ValidateIngestResourceRequest) (*ValidateIngestResourceResponse, error)
+	mustEmbedUnimplementedIngestionAuthorizationServiceServer()
+}
+
+// UnimplementedIngestionAuthorizationServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedIngestionAuthorizationServiceServer struct{}
+
+func (UnimplementedIngestionAuthorizationServiceServer) ValidateIngestResource(context.Context, *ValidateIngestResourceRequest) (*ValidateIngestResourceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ValidateIngestResource not implemented")
+}
+func (UnimplementedIngestionAuthorizationServiceServer) mustEmbedUnimplementedIngestionAuthorizationServiceServer() {
+}
+func (UnimplementedIngestionAuthorizationServiceServer) testEmbeddedByValue() {}
+
+// UnsafeIngestionAuthorizationServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to IngestionAuthorizationServiceServer will
+// result in compilation errors.
+type UnsafeIngestionAuthorizationServiceServer interface {
+	mustEmbedUnimplementedIngestionAuthorizationServiceServer()
+}
+
+func RegisterIngestionAuthorizationServiceServer(s grpc.ServiceRegistrar, srv IngestionAuthorizationServiceServer) {
+	// If the following call panics, it indicates UnimplementedIngestionAuthorizationServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&IngestionAuthorizationService_ServiceDesc, srv)
+}
+
+func _IngestionAuthorizationService_ValidateIngestResource_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ValidateIngestResourceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(IngestionAuthorizationServiceServer).ValidateIngestResource(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: IngestionAuthorizationService_ValidateIngestResource_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(IngestionAuthorizationServiceServer).ValidateIngestResource(ctx, req.(*ValidateIngestResourceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// IngestionAuthorizationService_ServiceDesc is the grpc.ServiceDesc for IngestionAuthorizationService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var IngestionAuthorizationService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "infrapilot.controlplane.v1.IngestionAuthorizationService",
+	HandlerType: (*IngestionAuthorizationServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "ValidateIngestResource",
+			Handler:    _IngestionAuthorizationService_ValidateIngestResource_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "infrapilot/controlplane/v1/authorization.proto",
+}

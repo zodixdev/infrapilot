@@ -21,6 +21,7 @@ type Server struct {
 	cpv1.UnimplementedApiKeyServiceServer
 	cpv1.UnimplementedAuditServiceServer
 	cpv1.UnimplementedAuthorizationServiceServer
+	cpv1.UnimplementedIngestionAuthorizationServiceServer
 
 	svc *service.Service
 	log *slog.Logger
@@ -40,6 +41,7 @@ func (s *Server) Register(r grpc.ServiceRegistrar) {
 	cpv1.RegisterApiKeyServiceServer(r, s)
 	cpv1.RegisterAuditServiceServer(r, s)
 	cpv1.RegisterAuthorizationServiceServer(r, s)
+	cpv1.RegisterIngestionAuthorizationServiceServer(r, s)
 }
 
 func (s *Server) fail(ctx context.Context, err error) error { return toStatus(ctx, s.log, err) }
@@ -463,4 +465,21 @@ func (s *Server) AuthenticateApiKey(ctx context.Context, req *cpv1.AuthenticateA
 	}
 	return &cpv1.AuthenticateApiKeyResponse{ApiKeyId: id.KeyID.String(), OrganizationId: id.OrganizationID.String(),
 		ProjectId: id.ProjectID.String(), Scopes: scopesTo(id.Scopes), ExpireTime: tsPtr(id.ExpiresAt)}, nil
+}
+
+// ValidateIngestResource implements the peer-restricted telemetry credential check.
+func (s *Server) ValidateIngestResource(ctx context.Context, req *cpv1.ValidateIngestResourceRequest) (*cpv1.ValidateIngestResourceResponse, error) {
+	var p ids
+	resource := p.parse("resource_id", req.GetResourceId())
+	if err := p.err(); err != nil {
+		return nil, s.fail(ctx, err)
+	}
+	binding, err := s.svc.ValidateIngestResource(ctx, req.GetKeySha256(), resource)
+	if err != nil {
+		return nil, s.fail(ctx, err)
+	}
+	return &cpv1.ValidateIngestResourceResponse{
+		OrganizationId: binding.OrganizationID.String(),
+		ProjectId:      binding.ProjectID.String(),
+	}, nil
 }

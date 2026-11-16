@@ -51,3 +51,15 @@ JOIN organizations o ON o.id = k.organization_id
 WHERE k.organization_id = @organization_id AND k.id = @id
   AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at > now())
   AND p.deleted_at IS NULL AND o.deleted_at IS NULL;
+
+-- name: GetIngestProject :one
+-- Recheck the credential and resource in the same tenant-scoped snapshot.
+SELECT k.project_id
+FROM api_keys k
+JOIN projects p ON p.organization_id = k.organization_id AND p.id = k.project_id
+JOIN organizations o ON o.id = k.organization_id
+JOIN resources r ON r.organization_id = k.organization_id AND r.project_id = k.project_id
+WHERE k.organization_id = @organization_id AND k.id = @key_id AND r.id = @resource_id
+  AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at > now())
+  AND 'ingest' = ANY(k.scopes)
+  AND p.deleted_at IS NULL AND o.deleted_at IS NULL AND r.deleted_at IS NULL;

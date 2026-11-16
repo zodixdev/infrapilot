@@ -22,6 +22,111 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type ValidateIngestResourceRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// SHA-256 of the full key text (32 bytes).
+	KeySha256     []byte `protobuf:"bytes,1,opt,name=key_sha256,json=keySha256,proto3" json:"key_sha256,omitempty"`
+	ResourceId    string `protobuf:"bytes,2,opt,name=resource_id,json=resourceId,proto3" json:"resource_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ValidateIngestResourceRequest) Reset() {
+	*x = ValidateIngestResourceRequest{}
+	mi := &file_infrapilot_controlplane_v1_authorization_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ValidateIngestResourceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ValidateIngestResourceRequest) ProtoMessage() {}
+
+func (x *ValidateIngestResourceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_infrapilot_controlplane_v1_authorization_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ValidateIngestResourceRequest.ProtoReflect.Descriptor instead.
+func (*ValidateIngestResourceRequest) Descriptor() ([]byte, []int) {
+	return file_infrapilot_controlplane_v1_authorization_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *ValidateIngestResourceRequest) GetKeySha256() []byte {
+	if x != nil {
+		return x.KeySha256
+	}
+	return nil
+}
+
+func (x *ValidateIngestResourceRequest) GetResourceId() string {
+	if x != nil {
+		return x.ResourceId
+	}
+	return ""
+}
+
+type ValidateIngestResourceResponse struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	OrganizationId string                 `protobuf:"bytes,1,opt,name=organization_id,json=organizationId,proto3" json:"organization_id,omitempty"`
+	ProjectId      string                 `protobuf:"bytes,2,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ValidateIngestResourceResponse) Reset() {
+	*x = ValidateIngestResourceResponse{}
+	mi := &file_infrapilot_controlplane_v1_authorization_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ValidateIngestResourceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ValidateIngestResourceResponse) ProtoMessage() {}
+
+func (x *ValidateIngestResourceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_infrapilot_controlplane_v1_authorization_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ValidateIngestResourceResponse.ProtoReflect.Descriptor instead.
+func (*ValidateIngestResourceResponse) Descriptor() ([]byte, []int) {
+	return file_infrapilot_controlplane_v1_authorization_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ValidateIngestResourceResponse) GetOrganizationId() string {
+	if x != nil {
+		return x.OrganizationId
+	}
+	return ""
+}
+
+func (x *ValidateIngestResourceResponse) GetProjectId() string {
+	if x != nil {
+		return x.ProjectId
+	}
+	return ""
+}
+
 type CheckPermissionRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	OrganizationId string                 `protobuf:"bytes,1,opt,name=organization_id,json=organizationId,proto3" json:"organization_id,omitempty"`
@@ -34,7 +139,7 @@ type CheckPermissionRequest struct {
 
 func (x *CheckPermissionRequest) Reset() {
 	*x = CheckPermissionRequest{}
-	mi := &file_infrapilot_controlplane_v1_authorization_proto_msgTypes[0]
+	mi := &file_infrapilot_controlplane_v1_authorization_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -46,7 +151,7 @@ func (x *CheckPermissionRequest) String() string {
 func (*CheckPermissionRequest) ProtoMessage() {}
 
 func (x *CheckPermissionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_infrapilot_controlplane_v1_authorization_proto_msgTypes[0]
+	mi := &file_infrapilot_controlplane_v1_authorization_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -59,7 +164,7 @@ func (x *CheckPermissionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CheckPermissionRequest.ProtoReflect.Descriptor instead.
 func (*CheckPermissionRequest) Descriptor() ([]byte, []int) {
-	return file_infrapilot_controlplane_v1_authorization_proto_rawDescGZIP(), []int{0}
+	return file_infrapilot_controlplane_v1_authorization_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *CheckPermissionRequest) GetOrganizationId() string {
@@ -94,7 +199,7 @@ type CheckPermissionResponse struct {
 
 func (x *CheckPermissionResponse) Reset() {
 	*x = CheckPermissionResponse{}
-	mi := &file_infrapilot_controlplane_v1_authorization_proto_msgTypes[1]
+	mi := &file_infrapilot_controlplane_v1_authorization_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -106,7 +211,7 @@ func (x *CheckPermissionResponse) String() string {
 func (*CheckPermissionResponse) ProtoMessage() {}
 
 func (x *CheckPermissionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_infrapilot_controlplane_v1_authorization_proto_msgTypes[1]
+	mi := &file_infrapilot_controlplane_v1_authorization_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -119,7 +224,7 @@ func (x *CheckPermissionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CheckPermissionResponse.ProtoReflect.Descriptor instead.
 func (*CheckPermissionResponse) Descriptor() ([]byte, []int) {
-	return file_infrapilot_controlplane_v1_authorization_proto_rawDescGZIP(), []int{1}
+	return file_infrapilot_controlplane_v1_authorization_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *CheckPermissionResponse) GetAllowed() bool {
@@ -146,7 +251,7 @@ type AuthenticateApiKeyRequest struct {
 
 func (x *AuthenticateApiKeyRequest) Reset() {
 	*x = AuthenticateApiKeyRequest{}
-	mi := &file_infrapilot_controlplane_v1_authorization_proto_msgTypes[2]
+	mi := &file_infrapilot_controlplane_v1_authorization_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -158,7 +263,7 @@ func (x *AuthenticateApiKeyRequest) String() string {
 func (*AuthenticateApiKeyRequest) ProtoMessage() {}
 
 func (x *AuthenticateApiKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_infrapilot_controlplane_v1_authorization_proto_msgTypes[2]
+	mi := &file_infrapilot_controlplane_v1_authorization_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -171,7 +276,7 @@ func (x *AuthenticateApiKeyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthenticateApiKeyRequest.ProtoReflect.Descriptor instead.
 func (*AuthenticateApiKeyRequest) Descriptor() ([]byte, []int) {
-	return file_infrapilot_controlplane_v1_authorization_proto_rawDescGZIP(), []int{2}
+	return file_infrapilot_controlplane_v1_authorization_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *AuthenticateApiKeyRequest) GetKeySha256() []byte {
@@ -195,7 +300,7 @@ type AuthenticateApiKeyResponse struct {
 
 func (x *AuthenticateApiKeyResponse) Reset() {
 	*x = AuthenticateApiKeyResponse{}
-	mi := &file_infrapilot_controlplane_v1_authorization_proto_msgTypes[3]
+	mi := &file_infrapilot_controlplane_v1_authorization_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -207,7 +312,7 @@ func (x *AuthenticateApiKeyResponse) String() string {
 func (*AuthenticateApiKeyResponse) ProtoMessage() {}
 
 func (x *AuthenticateApiKeyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_infrapilot_controlplane_v1_authorization_proto_msgTypes[3]
+	mi := &file_infrapilot_controlplane_v1_authorization_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -220,7 +325,7 @@ func (x *AuthenticateApiKeyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthenticateApiKeyResponse.ProtoReflect.Descriptor instead.
 func (*AuthenticateApiKeyResponse) Descriptor() ([]byte, []int) {
-	return file_infrapilot_controlplane_v1_authorization_proto_rawDescGZIP(), []int{3}
+	return file_infrapilot_controlplane_v1_authorization_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *AuthenticateApiKeyResponse) GetApiKeyId() string {
@@ -262,7 +367,16 @@ var File_infrapilot_controlplane_v1_authorization_proto protoreflect.FileDescrip
 
 const file_infrapilot_controlplane_v1_authorization_proto_rawDesc = "" +
 	"\n" +
-	".infrapilot/controlplane/v1/authorization.proto\x12\x1ainfrapilot.controlplane.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a'infrapilot/controlplane/v1/common.proto\"\xa8\x01\n" +
+	".infrapilot/controlplane/v1/authorization.proto\x12\x1ainfrapilot.controlplane.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a'infrapilot/controlplane/v1/common.proto\"_\n" +
+	"\x1dValidateIngestResourceRequest\x12\x1d\n" +
+	"\n" +
+	"key_sha256\x18\x01 \x01(\fR\tkeySha256\x12\x1f\n" +
+	"\vresource_id\x18\x02 \x01(\tR\n" +
+	"resourceId\"h\n" +
+	"\x1eValidateIngestResourceResponse\x12'\n" +
+	"\x0forganization_id\x18\x01 \x01(\tR\x0eorganizationId\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x02 \x01(\tR\tprojectId\"\xa8\x01\n" +
 	"\x16CheckPermissionRequest\x12'\n" +
 	"\x0forganization_id\x18\x01 \x01(\tR\x0eorganizationId\x12F\n" +
 	"\n" +
@@ -287,7 +401,9 @@ const file_infrapilot_controlplane_v1_authorization_proto_rawDesc = "" +
 	"expireTime2\x98\x02\n" +
 	"\x14AuthorizationService\x12z\n" +
 	"\x0fCheckPermission\x122.infrapilot.controlplane.v1.CheckPermissionRequest\x1a3.infrapilot.controlplane.v1.CheckPermissionResponse\x12\x83\x01\n" +
-	"\x12AuthenticateApiKey\x125.infrapilot.controlplane.v1.AuthenticateApiKeyRequest\x1a6.infrapilot.controlplane.v1.AuthenticateApiKeyResponseB\x8f\x02\n" +
+	"\x12AuthenticateApiKey\x125.infrapilot.controlplane.v1.AuthenticateApiKeyRequest\x1a6.infrapilot.controlplane.v1.AuthenticateApiKeyResponse2\xb1\x01\n" +
+	"\x1dIngestionAuthorizationService\x12\x8f\x01\n" +
+	"\x16ValidateIngestResource\x129.infrapilot.controlplane.v1.ValidateIngestResourceRequest\x1a:.infrapilot.controlplane.v1.ValidateIngestResourceResponseB\x8f\x02\n" +
 	"\x1ecom.infrapilot.controlplane.v1B\x12AuthorizationProtoP\x01ZOgithub.com/zodixdev/infrapilot/gen/go/infrapilot/controlplane/v1;controlplanev1\xa2\x02\x03ICX\xaa\x02\x1aInfrapilot.Controlplane.V1\xca\x02\x1aInfrapilot\\Controlplane\\V1\xe2\x02&Infrapilot\\Controlplane\\V1\\GPBMetadata\xea\x02\x1cInfrapilot::Controlplane::V1b\x06proto3"
 
 var (
@@ -302,28 +418,32 @@ func file_infrapilot_controlplane_v1_authorization_proto_rawDescGZIP() []byte {
 	return file_infrapilot_controlplane_v1_authorization_proto_rawDescData
 }
 
-var file_infrapilot_controlplane_v1_authorization_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_infrapilot_controlplane_v1_authorization_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_infrapilot_controlplane_v1_authorization_proto_goTypes = []any{
-	(*CheckPermissionRequest)(nil),     // 0: infrapilot.controlplane.v1.CheckPermissionRequest
-	(*CheckPermissionResponse)(nil),    // 1: infrapilot.controlplane.v1.CheckPermissionResponse
-	(*AuthenticateApiKeyRequest)(nil),  // 2: infrapilot.controlplane.v1.AuthenticateApiKeyRequest
-	(*AuthenticateApiKeyResponse)(nil), // 3: infrapilot.controlplane.v1.AuthenticateApiKeyResponse
-	(Permission)(0),                    // 4: infrapilot.controlplane.v1.Permission
-	(Role)(0),                          // 5: infrapilot.controlplane.v1.Role
-	(ApiKeyScope)(0),                   // 6: infrapilot.controlplane.v1.ApiKeyScope
-	(*timestamppb.Timestamp)(nil),      // 7: google.protobuf.Timestamp
+	(*ValidateIngestResourceRequest)(nil),  // 0: infrapilot.controlplane.v1.ValidateIngestResourceRequest
+	(*ValidateIngestResourceResponse)(nil), // 1: infrapilot.controlplane.v1.ValidateIngestResourceResponse
+	(*CheckPermissionRequest)(nil),         // 2: infrapilot.controlplane.v1.CheckPermissionRequest
+	(*CheckPermissionResponse)(nil),        // 3: infrapilot.controlplane.v1.CheckPermissionResponse
+	(*AuthenticateApiKeyRequest)(nil),      // 4: infrapilot.controlplane.v1.AuthenticateApiKeyRequest
+	(*AuthenticateApiKeyResponse)(nil),     // 5: infrapilot.controlplane.v1.AuthenticateApiKeyResponse
+	(Permission)(0),                        // 6: infrapilot.controlplane.v1.Permission
+	(Role)(0),                              // 7: infrapilot.controlplane.v1.Role
+	(ApiKeyScope)(0),                       // 8: infrapilot.controlplane.v1.ApiKeyScope
+	(*timestamppb.Timestamp)(nil),          // 9: google.protobuf.Timestamp
 }
 var file_infrapilot_controlplane_v1_authorization_proto_depIdxs = []int32{
-	4, // 0: infrapilot.controlplane.v1.CheckPermissionRequest.permission:type_name -> infrapilot.controlplane.v1.Permission
-	5, // 1: infrapilot.controlplane.v1.CheckPermissionResponse.role:type_name -> infrapilot.controlplane.v1.Role
-	6, // 2: infrapilot.controlplane.v1.AuthenticateApiKeyResponse.scopes:type_name -> infrapilot.controlplane.v1.ApiKeyScope
-	7, // 3: infrapilot.controlplane.v1.AuthenticateApiKeyResponse.expire_time:type_name -> google.protobuf.Timestamp
-	0, // 4: infrapilot.controlplane.v1.AuthorizationService.CheckPermission:input_type -> infrapilot.controlplane.v1.CheckPermissionRequest
-	2, // 5: infrapilot.controlplane.v1.AuthorizationService.AuthenticateApiKey:input_type -> infrapilot.controlplane.v1.AuthenticateApiKeyRequest
-	1, // 6: infrapilot.controlplane.v1.AuthorizationService.CheckPermission:output_type -> infrapilot.controlplane.v1.CheckPermissionResponse
-	3, // 7: infrapilot.controlplane.v1.AuthorizationService.AuthenticateApiKey:output_type -> infrapilot.controlplane.v1.AuthenticateApiKeyResponse
-	6, // [6:8] is the sub-list for method output_type
-	4, // [4:6] is the sub-list for method input_type
+	6, // 0: infrapilot.controlplane.v1.CheckPermissionRequest.permission:type_name -> infrapilot.controlplane.v1.Permission
+	7, // 1: infrapilot.controlplane.v1.CheckPermissionResponse.role:type_name -> infrapilot.controlplane.v1.Role
+	8, // 2: infrapilot.controlplane.v1.AuthenticateApiKeyResponse.scopes:type_name -> infrapilot.controlplane.v1.ApiKeyScope
+	9, // 3: infrapilot.controlplane.v1.AuthenticateApiKeyResponse.expire_time:type_name -> google.protobuf.Timestamp
+	2, // 4: infrapilot.controlplane.v1.AuthorizationService.CheckPermission:input_type -> infrapilot.controlplane.v1.CheckPermissionRequest
+	4, // 5: infrapilot.controlplane.v1.AuthorizationService.AuthenticateApiKey:input_type -> infrapilot.controlplane.v1.AuthenticateApiKeyRequest
+	0, // 6: infrapilot.controlplane.v1.IngestionAuthorizationService.ValidateIngestResource:input_type -> infrapilot.controlplane.v1.ValidateIngestResourceRequest
+	3, // 7: infrapilot.controlplane.v1.AuthorizationService.CheckPermission:output_type -> infrapilot.controlplane.v1.CheckPermissionResponse
+	5, // 8: infrapilot.controlplane.v1.AuthorizationService.AuthenticateApiKey:output_type -> infrapilot.controlplane.v1.AuthenticateApiKeyResponse
+	1, // 9: infrapilot.controlplane.v1.IngestionAuthorizationService.ValidateIngestResource:output_type -> infrapilot.controlplane.v1.ValidateIngestResourceResponse
+	7, // [7:10] is the sub-list for method output_type
+	4, // [4:7] is the sub-list for method input_type
 	4, // [4:4] is the sub-list for extension type_name
 	4, // [4:4] is the sub-list for extension extendee
 	0, // [0:4] is the sub-list for field type_name
@@ -341,9 +461,9 @@ func file_infrapilot_controlplane_v1_authorization_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_infrapilot_controlplane_v1_authorization_proto_rawDesc), len(file_infrapilot_controlplane_v1_authorization_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   6,
 			NumExtensions: 0,
-			NumServices:   1,
+			NumServices:   2,
 		},
 		GoTypes:           file_infrapilot_controlplane_v1_authorization_proto_goTypes,
 		DependencyIndexes: file_infrapilot_controlplane_v1_authorization_proto_depIdxs,

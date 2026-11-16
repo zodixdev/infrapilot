@@ -67,6 +67,32 @@ func (q *Queries) GetActiveAPIKeyScopes(ctx context.Context, arg GetActiveAPIKey
 	return i, err
 }
 
+const getIngestProject = `-- name: GetIngestProject :one
+SELECT k.project_id
+FROM api_keys k
+JOIN projects p ON p.organization_id = k.organization_id AND p.id = k.project_id
+JOIN organizations o ON o.id = k.organization_id
+JOIN resources r ON r.organization_id = k.organization_id AND r.project_id = k.project_id
+WHERE k.organization_id = $1 AND k.id = $2 AND r.id = $3
+  AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at > now())
+  AND 'ingest' = ANY(k.scopes)
+  AND p.deleted_at IS NULL AND o.deleted_at IS NULL AND r.deleted_at IS NULL
+`
+
+type GetIngestProjectParams struct {
+	OrganizationID uuid.UUID
+	KeyID          uuid.UUID
+	ResourceID     uuid.UUID
+}
+
+// Recheck the credential and resource in the same tenant-scoped snapshot.
+func (q *Queries) GetIngestProject(ctx context.Context, arg GetIngestProjectParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, getIngestProject, arg.OrganizationID, arg.KeyID, arg.ResourceID)
+	var project_id uuid.UUID
+	err := row.Scan(&project_id)
+	return project_id, err
+}
+
 const insertAPIKey = `-- name: InsertAPIKey :one
 INSERT INTO api_keys (id, organization_id, project_id, name, prefix, scopes, created_by, expires_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)

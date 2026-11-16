@@ -45,7 +45,7 @@ func TestExplain_KeyQueries(t *testing.T) {
 		   SELECT gen_random_uuid(), p.organization_id, p.id, (ARRAY['host','service','endpoint','database'])[1 + r % 4], 'res-' || r
 		   FROM projects p, generate_series(1, 20) r`,
 		`INSERT INTO api_keys (id, organization_id, project_id, name, prefix, scopes, created_by)
-		   SELECT gen_random_uuid(), p.organization_id, p.id, 'key ' || k, 'ipk_' || substr(md5(p.id::text || k), 1, 8), ARRAY['read'], gen_random_uuid()
+		   SELECT gen_random_uuid(), p.organization_id, p.id, 'key ' || k, 'ipk_' || substr(md5(p.id::text || k), 1, 8), ARRAY['read','ingest'], gen_random_uuid()
 		   FROM projects p, generate_series(1, 2) k`,
 		`INSERT INTO api_key_index (key_hash, key_id, organization_id, project_id, scopes)
 		   SELECT sha256(k.id::text::bytea), k.id, k.organization_id, k.project_id, k.scopes FROM api_keys k`,
@@ -65,12 +65,13 @@ func TestExplain_KeyQueries(t *testing.T) {
 	}
 
 	// Pick a mid-range org, one of its projects, a member and a key.
-	var org, project, user, key uuid.UUID
+	var org, project, user, key, resource uuid.UUID
 	var keyHash []byte
 	require.NoError(t, su.QueryRow(ctx, `SELECT id FROM organizations ORDER BY id OFFSET 500 LIMIT 1`).Scan(&org))
 	require.NoError(t, su.QueryRow(ctx, `SELECT id FROM projects WHERE organization_id = $1 LIMIT 1`, org).Scan(&project))
 	require.NoError(t, su.QueryRow(ctx, `SELECT user_id FROM memberships WHERE organization_id = $1 LIMIT 1`, org).Scan(&user))
-	require.NoError(t, su.QueryRow(ctx, `SELECT key_id, key_hash FROM api_key_index WHERE organization_id = $1 LIMIT 1`, org).Scan(&key, &keyHash))
+	require.NoError(t, su.QueryRow(ctx, `SELECT key_id, key_hash FROM api_key_index WHERE organization_id = $1 AND project_id = $2 LIMIT 1`, org, project).Scan(&key, &keyHash))
+	require.NoError(t, su.QueryRow(ctx, `SELECT id FROM resources WHERE organization_id = $1 AND project_id = $2 LIMIT 1`, org, project).Scan(&resource))
 
 	var bigOrg uuid.UUID
 	require.NoError(t, su.QueryRow(ctx, `SELECT id FROM organizations ORDER BY id LIMIT 1`).Scan(&bigOrg))
@@ -93,6 +94,7 @@ func TestExplain_KeyQueries(t *testing.T) {
 		{"ListAuditEvents", listAuditEvents, []any{org, maxUUID, int32(50)}, "tenant", uuid.Nil},
 		{"LookupAPIKey", lookupAPIKey, []any{keyHash}, "system", uuid.Nil},
 		{"GetActiveAPIKeyScopes", getActiveAPIKeyScopes, []any{org, key}, "tenant", uuid.Nil},
+		{"GetIngestProject", getIngestProject, []any{org, key, resource}, "tenant", uuid.Nil},
 		{"ListMembers_LargeTenant", listMembers, []any{bigOrg, uuid.Nil, int32(51)}, "tenant", bigOrg},
 		{"ListAuditEvents_LargeTenant", listAuditEvents, []any{bigOrg, maxUUID, int32(51)}, "tenant", bigOrg},
 		{"PurgeOrganizationResources", purgeOrganizationResources, []any{org, int32(1000)}, "batch", uuid.Nil},
